@@ -137,6 +137,16 @@ class WebhookManager:
             result_details = self._handle_capture_refunded(resource)
         elif event_type in ("PAYMENT.CAPTURE.DENIED", "CHECKOUT.ORDER.VOIDED"):
             result_details = self._handle_capture_denied(resource)
+        elif event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
+            sub_id = resource.get("id")
+            self.repo.update_subscription_status(sub_id, "ACTIVE")
+            result_details = {"action": "subscription_activated", "subscription_id": sub_id}
+        elif event_type == "BILLING.SUBSCRIPTION.CANCELLED":
+            sub_id = resource.get("id")
+            self.repo.update_subscription_status(sub_id, "CANCELLED")
+            result_details = {"action": "subscription_cancelled", "subscription_id": sub_id}
+        elif event_type == "PAYMENT.SALE.COMPLETED":
+            result_details = self._handle_recurring_sale_completed(resource)
         else:
             result_details = {"action": "ignored_unhandled_event_type"}
 
@@ -259,3 +269,60 @@ class WebhookManager:
                 conn.commit()
             return {"action": "marked_failed", "order_id": donation.order_id}
         return {"action": "unmatched_denied_event", "capture_id": capture_id}
+
+    def _handle_recurring_sale_completed(self, resource: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle recurring sale execution under a subscription."""
+        sale_id = resource.get("id", f"SALE-{datetime.now(timezone.utc).timestamp()}")
+        billing_agreement_id = resource.get("billing_agreement_id")
+        amount_info = resource.get("amount", {})
+        sale_amount = Decimal(str(amount_info.get("total", "25.00")))
+        curr_str = amount_info.get("currency", "USD")
+
+        sub = self.repo.get_subscription(billing_agreement_id) if billing_agreement_id else None
+        donor_name = sub.donor_name if sub else "Recurring Sustainer"
+        donor_email = sub.donor_email if sub else "donor@example.com"
+        dedication = f"Recurring monthly support ({sub.subscription_id})" if sub else "Recurring subscription"
+        is_anon = sub.is_anonymous if sub else False
+
+        order_ref = f"REC-ORD-{sale_id[-8:]}"
+        record = DonationRecord(
+            order_id=order_ref,
+            capture_id=sale_id,
+            donor_name=donor_name,
+            donor_email=donor_email,
+            amount=sale_amount,
+            currency=CurrencyCode(curr_str),
+            status=DonationStatus.COMPLETED,
+            dedication=dedication,
+            is_anonymous=is_anon,
+            receipt_sent=False,
+        )
+        self.repo.create_donation(record)
+
+        # Dispatch tax receipt for the cycle payment
+        receipt_payload = EmailReceiptPayload(
+            receipt_id=f"REC-{sale_id[-8:]}",
+            order_id=order_ref,
+            capture_id=sale_id,
+            donor_name=donor_name,
+            donor_email=donor_email,
+            amount=sale_amount,
+            currency=CurrencyCode(curr_str),
+            date_formatted=datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC"),
+            dedication=dedication,
+            org_name=self.org_metadata["org_name"],
+            org_email=self.org_metadata["org_email"],
+            org_tax_id=self.org_metadata["org_tax_id"],
+            org_website=self.org_metadata["org_website"],
+        )
+        sent = self.email_service.send_receipt(receipt_payload)
+        if sent:
+            self.repo.mark_receipt_sent(order_ref)
+
+        return {
+            "action": "recurring_donation_recorded",
+            "sale_id": sale_id,
+            "billing_agreement_id": billing_agreement_id,
+            "order_id": order_ref,
+            "amount": str(sale_amount),
+        }

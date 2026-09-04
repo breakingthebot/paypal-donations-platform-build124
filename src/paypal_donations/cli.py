@@ -249,5 +249,81 @@ def list_webhooks_cli(limit: int, db: Optional[str]) -> None:
     console.print(table)
 
 
+@main.group(name="subscriptions")
+def subscriptions_group() -> None:
+    """Manage recurring monthly/annual donor pledges."""
+    pass
+
+
+@subscriptions_group.command(name="list")
+@click.option("--limit", default=25, type=int, help="Maximum subscriptions to show.")
+@click.option("--status", default=None, help="Filter by status (e.g. ACTIVE).")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def list_subscriptions_cli(limit: int, status: Optional[str], db: Optional[str]) -> None:
+    """List recurring donor pledge subscriptions."""
+    repo = get_repo(db)
+    subs = repo.list_subscriptions(limit=limit, status=status)
+
+    if not subs:
+        console.print("[yellow]No recurring subscriptions found.[/yellow]")
+        return
+
+    table = Table(title=f"Recurring Pledges (Latest {len(subs)})", border_style="cyan")
+    table.add_column("Subscription ID", style="cyan", no_wrap=True)
+    table.add_column("Donor", style="bold")
+    table.add_column("Email", style="magenta")
+    table.add_column("Amount", justify="right", style="green")
+    table.add_column("Frequency", style="blue")
+    table.add_column("Status", style="bold")
+
+    for s in subs:
+        color = "green" if s.status == "ACTIVE" else "red"
+        table.add_row(
+            s.subscription_id,
+            s.donor_name,
+            s.donor_email,
+            f"{s.amount:.2f} {s.currency.value}",
+            s.frequency.value,
+            f"[{color}]{s.status}[/{color}]",
+        )
+
+    console.print(table)
+
+
+@subscriptions_group.command(name="stats")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def subscription_stats_cli(db: Optional[str]) -> None:
+    """Show Monthly Recurring Revenue (MRR) and active sustaining supporters."""
+    repo = get_repo(db)
+    metrics = repo.get_recurring_metrics()
+
+    grid = Table.grid(expand=True, padding=(0, 2))
+    grid.add_column(justify="center")
+    grid.add_column(justify="center")
+
+    grid.add_row(
+        Panel(f"[bold green]${metrics.total_active_pledged_monthly:.2f}[/bold green]", title="[cyan]Total MRR (USD)[/cyan]"),
+        Panel(f"[bold magenta]{metrics.active_subscribers}[/bold magenta]", title="[cyan]Active Sustaining Supporters[/cyan]"),
+    )
+
+    console.print(Panel(grid, title="[bold]Recurring Pledge Metrics[/bold]", border_style="green"))
+
+
+@subscriptions_group.command(name="cancel")
+@click.option("--id", "sub_id", required=True, help="Subscription ID to cancel.")
+@click.option("--reason", default="Donor requested cancellation", help="Cancellation reason.")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def cancel_subscription_cli(sub_id: str, reason: str, db: Optional[str]) -> None:
+    """Cancel an active recurring pledge subscription."""
+    repo = get_repo(db)
+    sub = repo.get_subscription(sub_id)
+    if not sub:
+        console.print(f"[bold red]Subscription {sub_id} not found.[/bold red]")
+        sys.exit(1)
+
+    repo.update_subscription_status(sub_id, "CANCELLED", reason=reason)
+    console.print(f"[bold green]Subscription {sub_id} has been cancelled.[/bold green]")
+
+
 if __name__ == "__main__":
     main()

@@ -14,10 +14,13 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from paypal_donations.models import (
     CurrencyCode,
+    DonationFrequency,
     DonationRecord,
     DonationStats,
     DonationStatus,
     PublicDonorEntry,
+    RecurringMetrics,
+    SubscriptionRecord,
     WebhookEventRecord,
 )
 
@@ -78,6 +81,26 @@ class DonorRepository:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_event_id ON webhook_events(event_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_event_type ON webhook_events(event_type)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subscription_id TEXT UNIQUE NOT NULL,
+                    donor_name TEXT NOT NULL,
+                    donor_email TEXT NOT NULL,
+                    amount NUMERIC NOT NULL,
+                    currency TEXT NOT NULL,
+                    frequency TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    dedication TEXT,
+                    is_anonymous INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_id ON subscriptions(subscription_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_email ON subscriptions(donor_email)")
             conn.commit()
 
     def create_donation(self, donation: DonationRecord) -> DonationRecord:
@@ -206,6 +229,141 @@ class DonorRepository:
                 )
                 for r in rows
             ]
+
+    def create_subscription(self, sub: SubscriptionRecord) -> SubscriptionRecord:
+        """Store a new recurring pledge record."""
+        now_str = sub.created_at.isoformat()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO subscriptions (
+                    subscription_id, donor_name, donor_email, amount, currency,
+                    frequency, status, dedication, is_anonymous, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sub.subscription_id,
+                    sub.donor_name,
+                    sub.donor_email,
+                    str(sub.amount),
+                    sub.currency.value if hasattr(sub.currency, "value") else str(sub.currency),
+                    sub.frequency.value if hasattr(sub.frequency, "value") else str(sub.frequency),
+                    sub.status,
+                    sub.dedication,
+                    1 if sub.is_anonymous else 0,
+                    now_str,
+                    now_str,
+                ),
+            )
+            conn.commit()
+            sub.id = cur.lastrowid
+            return sub
+
+    def get_subscription(self, subscription_id: str) -> Optional[SubscriptionRecord]:
+        """Lookup a subscription by its PayPal subscription ID."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM subscriptions WHERE subscription_id = ?", (subscription_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return SubscriptionRecord(
+                id=row["id"],
+                subscription_id=row["subscription_id"],
+                donor_name=row["donor_name"],
+                donor_email=row["donor_email"],
+                amount=Decimal(str(row["amount"])),
+                currency=CurrencyCode(row["currency"]),
+                frequency=DonationFrequency(row["frequency"]),
+                status=row["status"],
+                dedication=row["dedication"],
+                is_anonymous=bool(row["is_anonymous"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+
+    def update_subscription_status(self, subscription_id: str, status: str, reason: Optional[str] = None) -> bool:
+        """Transition subscription status (e.g. ACTIVE, CANCELLED, SUSPENDED)."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE subscriptions
+                SET status = ?, updated_at = ?
+                WHERE subscription_id = ?
+                """,
+                (status, now_str, subscription_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_subscriptions(self, limit: int = 50, status: Optional[str] = None) -> List[SubscriptionRecord]:
+        """List ongoing subscriptions with optional status filter."""
+        query = "SELECT * FROM subscriptions"
+        params: List[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            return [
+                SubscriptionRecord(
+                    id=r["id"],
+                    subscription_id=r["subscription_id"],
+                    donor_name=r["donor_name"],
+                    donor_email=r["donor_email"],
+                    amount=Decimal(str(r["amount"])),
+                    currency=CurrencyCode(r["currency"]),
+                    frequency=DonationFrequency(r["frequency"]),
+                    status=r["status"],
+                    dedication=r["dedication"],
+                    is_anonymous=bool(r["is_anonymous"]),
+                    created_at=datetime.fromisoformat(r["created_at"]),
+                    updated_at=datetime.fromisoformat(r["updated_at"]),
+                )
+                for r in rows
+            ]
+
+    def get_recurring_metrics(self) -> RecurringMetrics:
+        """Calculate Monthly Recurring Revenue (MRR) and active subscriber counts."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT
+                    currency,
+                    COUNT(*) as active_count,
+                    SUM(amount) as mrr_val
+                FROM subscriptions
+                WHERE status = 'ACTIVE'
+                GROUP BY currency
+            """)
+            rows = cur.fetchall()
+
+            total_active = 0
+            mrr_map: Dict[str, Decimal] = {}
+            total_monthly_usd = Decimal("0.00")
+
+            for r in rows:
+                curr = r["currency"]
+                cnt = r["active_count"]
+                mrr = Decimal(str(r["mrr_val"]))
+                total_active += cnt
+                mrr_map[curr] = mrr
+                if curr == "USD":
+                    total_monthly_usd += mrr
+
+            return RecurringMetrics(
+                active_subscribers=total_active,
+                mrr_by_currency=mrr_map,
+                total_active_pledged_monthly=Decimal(f"{total_monthly_usd:.2f}"),
+            )
 
     def mark_receipt_sent(self, order_id: str) -> bool:
         """Update the receipt_sent flag to True."""

@@ -12,9 +12,11 @@ import requests
 
 from paypal_donations.models import (
     CreateOrderRequest,
+    CreateSubscriptionRequest,
     CurrencyCode,
     DonationStatus,
     OrderCreationResult,
+    SubscriptionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,7 @@ class PayPalClient:
 
         # In-memory mock store for mock mode
         self._mock_orders: Dict[str, Dict[str, Any]] = {}
+        self._mock_subscriptions: Dict[str, Dict[str, Any]] = {}
 
     @property
     def is_mock(self) -> bool:
@@ -290,3 +293,144 @@ class PayPalClient:
             }
         except requests.RequestException as e:
             raise PayPalClientError(f"Network failure capturing PayPal order: {e}") from e
+
+    def create_subscription(
+        self,
+        request: CreateSubscriptionRequest,
+        plan_id: Optional[str] = None,
+        return_url: Optional[str] = None,
+        cancel_url: Optional[str] = None,
+    ) -> SubscriptionResult:
+        """Create a recurring PayPal billing subscription for a recurring pledge."""
+        if self.is_mock:
+            sub_id = f"I-MOCK-SUB-{uuid.uuid4().hex[:10].upper()}"
+            self._mock_subscriptions[sub_id] = {
+                "id": sub_id,
+                "status": "ACTIVE",
+                "amount": request.amount,
+                "currency": request.currency,
+                "frequency": request.frequency,
+                "donor_name": request.donor_name,
+                "donor_email": request.donor_email,
+                "dedication": request.dedication,
+                "is_anonymous": request.is_anonymous,
+                "created_at": time.time(),
+            }
+            return SubscriptionResult(
+                subscription_id=sub_id,
+                status="ACTIVE",
+                approval_url=f"https://www.sandbox.paypal.com/webapps/billing/subscriptions?ba_token={sub_id}",
+                amount=request.amount,
+                currency=request.currency,
+                frequency=request.frequency,
+                mode="mock",
+            )
+
+        token = self.get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        sub_payload: Dict[str, Any] = {
+            "plan_id": plan_id or "P-MOCK-DEFAULT-PLAN",
+            "subscriber": {
+                "name": {"given_name": request.donor_name},
+                "email_address": request.donor_email,
+            },
+            "application_context": {
+                "brand_name": "Recurring Support",
+                "return_url": return_url or "https://example.com/sub-success",
+                "cancel_url": cancel_url or "https://example.com/sub-cancel",
+            },
+        }
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/v1/billing/subscriptions",
+                headers=headers,
+                json=sub_payload,
+                timeout=15,
+            )
+            if resp.status_code not in (200, 201):
+                raise PayPalClientError(
+                    f"PayPal subscription creation failed: {resp.text}",
+                    status_code=resp.status_code,
+                    response_data=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {},
+                )
+            data = resp.json()
+            approval_url = None
+            for link in data.get("links", []):
+                if link.get("rel") == "approve":
+                    approval_url = link.get("href")
+                    break
+            return SubscriptionResult(
+                subscription_id=data["id"],
+                status=data.get("status", "APPROVAL_PENDING"),
+                approval_url=approval_url,
+                amount=request.amount,
+                currency=request.currency,
+                frequency=request.frequency,
+                mode=self.mode,
+            )
+        except requests.RequestException as e:
+            raise PayPalClientError(f"Network failure creating PayPal subscription: {e}") from e
+
+    def cancel_subscription(self, subscription_id: str, reason: str = "Donor requested cancellation") -> Dict[str, Any]:
+        """Cancel an ongoing PayPal subscription."""
+        if self.is_mock:
+            if subscription_id not in self._mock_subscriptions:
+                raise PayPalClientError(f"Subscription {subscription_id} not found", status_code=404)
+            self._mock_subscriptions[subscription_id]["status"] = "CANCELLED"
+            self._mock_subscriptions[subscription_id]["cancel_reason"] = reason
+            return {
+                "subscription_id": subscription_id,
+                "status": "CANCELLED",
+                "reason": reason,
+            }
+
+        token = self.get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/v1/billing/subscriptions/{subscription_id}/cancel",
+                headers=headers,
+                json={"reason": reason},
+                timeout=15,
+            )
+            if resp.status_code != 204:
+                raise PayPalClientError(
+                    f"PayPal subscription cancellation failed: {resp.text}",
+                    status_code=resp.status_code,
+                )
+            return {
+                "subscription_id": subscription_id,
+                "status": "CANCELLED",
+                "reason": reason,
+            }
+        except requests.RequestException as e:
+            raise PayPalClientError(f"Network failure canceling PayPal subscription: {e}") from e
+
+    def get_subscription(self, subscription_id: str) -> Dict[str, Any]:
+        """Fetch status and metadata for a subscription."""
+        if self.is_mock:
+            if subscription_id not in self._mock_subscriptions:
+                raise PayPalClientError(f"Subscription {subscription_id} not found", status_code=404)
+            return self._mock_subscriptions[subscription_id]
+
+        token = self.get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = requests.get(f"{self.base_url}/v1/billing/subscriptions/{subscription_id}", headers=headers, timeout=15)
+            if resp.status_code != 200:
+                raise PayPalClientError(f"Subscription lookup failed: {resp.text}", status_code=resp.status_code)
+            return resp.json()
+        except requests.RequestException as e:
+            raise PayPalClientError(f"Network error querying subscription: {e}") from e

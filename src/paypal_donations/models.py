@@ -26,6 +26,13 @@ class CurrencyCode(str, Enum):
     AUD = "AUD"
 
 
+class DonationFrequency(str, Enum):
+    """Donation recurrence frequency."""
+    ONE_TIME = "ONE_TIME"
+    MONTHLY = "MONTHLY"
+    ANNUAL = "ANNUAL"
+
+
 class CreateOrderRequest(BaseModel):
     """Payload to initiate a PayPal donation order."""
     amount: Decimal = Field(..., gt=Decimal("0.00"), description="Donation amount must be positive.")
@@ -167,3 +174,62 @@ class RefundReceiptPayload(BaseModel):
     org_name: str
     org_email: str
     org_website: str
+
+
+class CreateSubscriptionRequest(BaseModel):
+    """Payload to initiate a recurring subscription pledge."""
+    amount: Decimal = Field(..., gt=Decimal("0.00"), description="Recurring donation amount.")
+    currency: CurrencyCode = Field(default=CurrencyCode.USD, description="Three-letter currency code.")
+    frequency: DonationFrequency = Field(default=DonationFrequency.MONTHLY, description="Recurring schedule.")
+    donor_name: str = Field(..., min_length=1, max_length=120)
+    donor_email: str = Field(..., description="Donor email address.")
+    dedication: Optional[str] = Field(None, max_length=250)
+    is_anonymous: bool = Field(default=False)
+
+    @field_validator("donor_email")
+    @classmethod
+    def validate_email_format(cls, value: str) -> str:
+        value = value.strip().lower()
+        if "@" not in value or "." not in value.split("@")[-1]:
+            raise ValueError("Invalid email format.")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def round_amount(cls, value: Decimal) -> Decimal:
+        return Decimal(f"{value:.2f}")
+
+
+class SubscriptionResult(BaseModel):
+    """Subscription response returned to frontend or client."""
+    subscription_id: str
+    status: str = "APPROVAL_PENDING"
+    approval_url: Optional[str] = None
+    amount: Decimal
+    currency: CurrencyCode
+    frequency: DonationFrequency = DonationFrequency.MONTHLY
+    mode: str = "mock"
+
+
+class SubscriptionRecord(BaseModel):
+    """Persistent SQLite record for ongoing recurring pledges."""
+    id: Optional[int] = None
+    subscription_id: str
+    donor_name: str
+    donor_email: str
+    amount: Decimal
+    currency: CurrencyCode
+    frequency: DonationFrequency = DonationFrequency.MONTHLY
+    status: str = "ACTIVE"
+    dedication: Optional[str] = None
+    is_anonymous: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecurringMetrics(BaseModel):
+    """Aggregated subscription pledge metrics."""
+    active_subscribers: int = 0
+    mrr_by_currency: Dict[str, Decimal] = Field(default_factory=dict)
+    total_active_pledged_monthly: Decimal = Decimal("0.00")
+

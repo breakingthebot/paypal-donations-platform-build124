@@ -16,16 +16,21 @@ from paypal_donations.email_service import EmailService
 from paypal_donations.models import (
     CaptureOrderRequest,
     CreateOrderRequest,
+    CreateSubscriptionRequest,
     CurrencyCode,
+    DonationFrequency,
     DonationRecord,
     DonationStats,
     DonationStatus,
     EmailReceiptPayload,
     OrderCreationResult,
     PublicDonorEntry,
+    RecurringMetrics,
     RefundReceiptPayload,
     RefundRequest,
     RefundResult,
+    SubscriptionRecord,
+    SubscriptionResult,
     WebhookEventRecord,
 )
 from paypal_donations.paypal_client import PayPalClient, PayPalClientError
@@ -240,6 +245,65 @@ def get_donor_wall(limit: int = Query(20, ge=1, le=100)) -> List[PublicDonorEntr
 def get_donation_statistics() -> DonationStats:
     """Retrieve aggregated donation financial metrics and totals."""
     return repo.get_statistics()
+
+
+@app.post("/api/donations/create-subscription", response_model=SubscriptionResult)
+def create_recurring_pledge(req: CreateSubscriptionRequest) -> SubscriptionResult:
+    """Create a recurring monthly or annual donation pledge via PayPal Subscriptions."""
+    try:
+        sub_res = paypal_client.create_subscription(req)
+        # Store in SQLite
+        sub_record = SubscriptionRecord(
+            subscription_id=sub_res.subscription_id,
+            donor_name=req.donor_name,
+            donor_email=req.donor_email,
+            amount=req.amount,
+            currency=req.currency,
+            frequency=req.frequency,
+            status=sub_res.status,
+            dedication=req.dedication,
+            is_anonymous=req.is_anonymous,
+        )
+        repo.create_subscription(sub_record)
+        return sub_res
+    except PayPalClientError as e:
+        raise HTTPException(status_code=e.status_code or 400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create subscription: {e}")
+
+
+@app.get("/api/donations/recurring-stats", response_model=RecurringMetrics)
+def get_recurring_statistics() -> RecurringMetrics:
+    """Get active sustaining donor count and Monthly Recurring Revenue (MRR)."""
+    return repo.get_recurring_metrics()
+
+
+@app.get("/api/admin/subscriptions", response_model=List[SubscriptionRecord])
+def get_admin_subscriptions(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None),
+) -> List[SubscriptionRecord]:
+    """Admin endpoint to inspect recurring pledge subscriptions."""
+    return repo.list_subscriptions(limit=limit, status=status)
+
+
+@app.post("/api/admin/subscriptions/{subscription_id}/cancel")
+def cancel_donor_subscription(subscription_id: str, reason: str = Query("Donor requested cancellation")):
+    """Cancel an active recurring pledge subscription."""
+    sub = repo.get_subscription(subscription_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail=f"Subscription {subscription_id} not found.")
+
+    try:
+        paypal_client.cancel_subscription(subscription_id, reason=reason)
+        repo.update_subscription_status(subscription_id, "CANCELLED", reason=reason)
+        return {
+            "subscription_id": subscription_id,
+            "status": "CANCELLED",
+            "message": "Subscription cancelled successfully.",
+        }
+    except PayPalClientError as e:
+        raise HTTPException(status_code=e.status_code or 400, detail=str(e))
 
 
 @app.get("/api/admin/donations", response_model=List[DonationRecord])
@@ -463,6 +527,15 @@ def serve_donation_portal() -> str:
             </select>
           </div>
 
+          <!-- Donation Frequency Selector (One-Time vs Monthly) -->
+          <div class="flex p-1 bg-slate-100 rounded-xl mb-6">
+            <button type="button" id="freq-onetime" class="flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-slate-900 transition-all">One-Time Gift</button>
+            <button type="button" id="freq-monthly" class="flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:text-slate-900 transition-all flex items-center justify-center gap-1.5">
+              <span>Give Monthly</span>
+              <span class="text-rose-500">&#10084;</span>
+            </button>
+          </div>
+
           <!-- Preset Amount Chips -->
           <div class="mb-6">
             <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Select Donation Amount</label>
@@ -566,6 +639,24 @@ def serve_donation_portal() -> str:
   <script>
     let selectedAmount = "25.00";
     let selectedCurrency = "USD";
+    let isMonthly = false;
+
+    const freqOneTimeBtn = document.getElementById("freq-onetime");
+    const freqMonthlyBtn = document.getElementById("freq-monthly");
+
+    freqOneTimeBtn.addEventListener("click", () => {{
+      isMonthly = false;
+      freqOneTimeBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-slate-900 transition-all";
+      freqMonthlyBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:text-slate-900 transition-all flex items-center justify-center gap-1.5";
+      document.querySelector("#paypal-donate-btn span:first-child").textContent = "Donate with";
+    }});
+
+    freqMonthlyBtn.addEventListener("click", () => {{
+      isMonthly = true;
+      freqMonthlyBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-rose-600 transition-all flex items-center justify-center gap-1.5";
+      freqOneTimeBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:text-slate-900 transition-all";
+      document.querySelector("#paypal-donate-btn span:first-child").textContent = "Pledge Monthly with";
+    }});
 
     // Setup currency symbols
     const symbols = {{ "USD": "$", "EUR": "€", "GBP": "£", "CAD": "$", "AUD": "$" }};
@@ -681,7 +772,42 @@ def serve_donation_portal() -> str:
       feedback.textContent = "Connecting to PayPal v2 checkout...";
 
       try {{
-        // Step 1: Create PayPal Order
+        if (isMonthly) {{
+          // Create Recurring Subscription
+          const subRes = await fetch("/api/donations/create-subscription", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              amount: amtNum,
+              currency: selectedCurrency,
+              frequency: "MONTHLY",
+              donor_name: name,
+              donor_email: email,
+              dedication: dedication || null,
+              is_anonymous: isAnonymous
+            }})
+          }});
+
+          if (!subRes.ok) {{
+            const err = await subRes.json();
+            throw new Error(err.detail || "Subscription pledge failed.");
+          }}
+
+          const subData = await subRes.json();
+
+          // Show Success Modal for Monthly Pledge
+          document.getElementById("modal-order-id").textContent = subData.subscription_id;
+          document.getElementById("modal-capture-id").textContent = "ACTIVE (MONTHLY)";
+          document.getElementById("modal-receipt-id").textContent = "SUSTAINER-PLEDGE";
+          document.getElementById("modal-amount").textContent = `${{subData.currency}} $${{parseFloat(subData.amount).toFixed(2)}}/mo`;
+          document.getElementById("receipt-modal").classList.remove("hidden");
+
+          feedback.className = "hidden";
+          loadData();
+          return;
+        }}
+
+        // Step 1: Create PayPal One-Time Order
         const createRes = await fetch("/api/donations/create-order", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},

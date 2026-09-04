@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-04
+
+### Added
+- **Recurring Pledges & Monthly Subscription Engine**:
+  - Full support for sustaining donor subscriptions via PayPal Subscriptions API (`/v1/billing/subscriptions`).
+  - Frontend "Give Once" vs "Give Monthly" frequency switch with dynamic button labels and modal feedback.
+  - Pydantic models: `CreateSubscriptionRequest`, `SubscriptionResult`, `SubscriptionRecord`, and `RecurringMetrics`.
+- **Database Schema Expansion (`subscriptions` table)**:
+  - Persistent SQLite table with indexing on `subscription_id`, `donor_email`, and `status`.
+  - Repository methods: `create_subscription`, `get_subscription`, `update_subscription_status`, `list_subscriptions`, and `get_recurring_metrics`.
+- **Monthly Recurring Revenue (MRR) Analytics Engine**:
+  - Computes active sustaining supporter counts and currency-segmented monthly recurring revenue.
+  - Aggregates metrics available via `GET /api/donations/recurring-stats` and CLI.
+- **Subscription Webhook Handlers**:
+  - `BILLING.SUBSCRIPTION.ACTIVATED`: Marks subscription state as `ACTIVE`.
+  - `BILLING.SUBSCRIPTION.CANCELLED`: Marks subscription state as `CANCELLED`.
+  - `PAYMENT.SALE.COMPLETED`: Automatically generates a completed `DonationRecord` for each billing cycle payment and delivers an official tax receipt email.
+- **REST Endpoints for Recurring Pledges**:
+  - `POST /api/donations/create-subscription`: Creates a recurring pledge agreement.
+  - `GET /api/donations/recurring-stats`: Exposes active subscriber counts and MRR.
+  - `GET /api/admin/subscriptions`: Administrative endpoint to filter and audit subscriptions.
+  - `POST /api/admin/subscriptions/{id}/cancel`: Safely cancels an active subscription with reason notes.
+- **New CLI Subscriptions Commands**:
+  - `paypal-donations subscriptions list`: Displays formatted table of active and cancelled pledges.
+  - `paypal-donations subscriptions stats`: Renders a Rich panel with total MRR (USD) and active sustainers.
+  - `paypal-donations subscriptions cancel`: Cancels an active subscription directly from the terminal.
+- **Comprehensive Subscriptions Test Suite**:
+  - 12 new unit and integration tests covering PayPal client subscriptions, repository CRUD & MRR metrics, webhook activation/cancellation/sales cycles, API endpoints, and CLI commands (45 total passing tests).
+
 ## [1.1.0] - 2026-09-04
 
 ### Added

@@ -14,10 +14,30 @@ This document logs every incremental engineering iteration and git commit pushed
 | :---: | :---: | :---: | :--- | :---: | :--- |
 | **01** | [`e0413ab`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/e0413ab) | `v1.0.0` | **Core PayPal v2 Integration, Automated Confirmation Receipts, Persistent SQLite Donor Log & Web Portal**<br>Complete PayPal Orders client with mock engine, SQLite database repository with anonymity masking, automated HTML/plaintext tax receipt mailer, FastAPI web backend, interactive Tailwind CSS donation portal, Click/Rich CLI suite (`paypal-donations`), and CI workflow. | 24 / 24 | [Iteration 01 Summary](docs/summaries/iteration_01_summary.md) |
 | **02** | [`5f0ca38`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/5f0ca38) | `v1.1.0` | **PayPal Webhooks Verification, Asynchronous Event Processing & Automated Refund Lifecycle**<br>Cryptographic signature verification engine with SSRF domain whitelisting, SQLite `webhook_events` audit and idempotency store, asynchronous routing for capture and refund events, automated refund receipts, REST webhook/refund endpoints, and CLI administration suite. | 33 / 33 | [Iteration 02 Summary](docs/summaries/iteration_02_summary.md) |
+| **03** | [`faf302c`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/faf302c) | `v1.2.0` | **Recurring Pledges & Monthly Sustainer Subscriptions, MRR Analytics Engine, Subscription Webhooks & CLI Management**<br>PayPal Subscriptions integration, SQLite `subscriptions` schema with multi-currency MRR calculation, automated cycle payment recording with tax receipt delivery via `PAYMENT.SALE.COMPLETED` webhooks, REST pledge/cancel endpoints, and `paypal-donations subscriptions` CLI suite. | 45 / 45 | [Iteration 03 Summary](docs/summaries/iteration_03_summary.md) |
 
 ---
 
 ## Chronological Iteration Entries
+
+### Iteration 3: Recurring Pledges & Monthly Sustainer Subscriptions, MRR Analytics Engine, Subscription Webhooks & CLI Management
+- **Git Commit**: [`faf302c`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/faf302c)
+- **Tag / Version**: `v1.2.0`
+- **Date**: 2026-09-04
+- **Plain English Summary**:
+  Expanded the platform into a monthly sustainer and subscription management platform. Added support for recurring pledges via PayPal Subscriptions API (`/v1/billing/subscriptions`), an SQLite `subscriptions` schema, Monthly Recurring Revenue (MRR) calculation grouped by currency, webhook lifecycle events (`BILLING.SUBSCRIPTION.ACTIVATED`, `CANCELLED`, and automated cycle payment recording via `PAYMENT.SALE.COMPLETED`), a "Give Monthly" toggle in the web portal, REST administration routes, and a terminal CLI command group (`paypal-donations subscriptions list`, `stats`, `cancel`).
+- **Key Files Introduced / Modified**:
+  - `src/paypal_donations/models.py`: Added `DonationFrequency`, `CreateSubscriptionRequest`, `SubscriptionResult`, `SubscriptionRecord`, and `RecurringMetrics`.
+  - `src/paypal_donations/paypal_client.py`: Added subscription creation, cancellation, lookups, and mock state storage.
+  - `src/paypal_donations/repository.py`: Added `subscriptions` table schema, CRUD operations, and MRR metrics calculations.
+  - `src/paypal_donations/webhooks.py`: Handlers for `BILLING.SUBSCRIPTION.ACTIVATED`, `CANCELLED`, and recurring `PAYMENT.SALE.COMPLETED` donations.
+  - `src/paypal_donations/api.py`: Added `/api/donations/create-subscription`, `/api/donations/recurring-stats`, admin routes, and frontend toggle.
+  - `src/paypal_donations/cli.py`: Added `subscriptions` command group (`list`, `stats`, `cancel`).
+  - `tests/test_subscriptions.py`: 12 unit & integration tests covering client, repository, webhooks, API, and CLI.
+  - `docs/summaries/iteration_03_summary.md`: Iteration 3 technical archive.
+- **Test Results**: 45 Pytest unit & integration tests passing (8.61s).
+
+---
 
 ### Iteration 2: PayPal Webhooks Verification, Asynchronous Event Processing & Automated Refund Lifecycle
 - **Git Commit**: [`5f0ca38`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/5f0ca38)
