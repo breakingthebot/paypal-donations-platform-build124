@@ -1,0 +1,39 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# AGENTS instructions
+AGENTS.md
+
+# Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Testing & Cache
+.pytest_cache/
+.pytest_temp/
+.coverage
+htmlcov/
+
+# Local databases and runtime storage
+storage/
+*.sqlite3
+*.db
