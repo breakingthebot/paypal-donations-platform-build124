@@ -4,8 +4,9 @@ from decimal import Decimal
 from pathlib import Path
 from click.testing import CliRunner
 
+from paypal_donations import __version__
 from paypal_donations.cli import main
-from paypal_donations.models import CurrencyCode, DonationRecord, DonationStatus
+from paypal_donations.models import CurrencyCode, DonationRecord, DonationStatus, RefundReceiptPayload
 from paypal_donations.repository import DonorRepository
 
 
@@ -14,7 +15,7 @@ def test_cli_version():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
     assert "paypal-donations" in result.output
-    assert "1.0.0" in result.output
+    assert __version__ in result.output
 
 
 def test_cli_help():
@@ -79,3 +80,39 @@ def test_cli_test_email(tmp_path: Path):
     res = runner.invoke(main, ["donations", "test-email", "--recipient", "testuser@example.com", "--amount", "50.0"])
     assert res.exit_code == 0
     assert "Confirmation receipt successfully generated" in res.output
+
+
+def test_cli_donations_refund(tmp_path: Path):
+    db_file = tmp_path / "cli_refund.sqlite3"
+    repo = DonorRepository(db_path=str(db_file))
+    repo.create_donation(
+        DonationRecord(
+            order_id="CLI-REF-01",
+            donor_name="Refund Donor",
+            donor_email="refund@example.com",
+            amount=Decimal("60.00"),
+            currency=CurrencyCode.USD,
+            status=DonationStatus.COMPLETED,
+        )
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(main, ["donations", "refund", "--order", "CLI-REF-01", "--reason", "Duplicate charge", "--db", str(db_file)])
+    assert res.exit_code == 0
+    assert "marked as REFUNDED" in res.output
+
+
+def test_cli_webhooks_list(tmp_path: Path):
+    db_file = tmp_path / "cli_webhooks.sqlite3"
+    repo = DonorRepository(db_path=str(db_file))
+    repo.record_webhook_event(
+        event_id="WH-CLI-01",
+        event_type="PAYMENT.CAPTURE.COMPLETED",
+        resource_id="CAP-CLI-01",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(main, ["webhooks", "list", "--db", str(db_file)])
+    assert res.exit_code == 0
+    assert "WH-CLI-01" in res.output
+    assert "PAYMENT.CAPTURE" in res.output

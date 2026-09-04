@@ -18,6 +18,7 @@ from paypal_donations.models import (
     DonationStats,
     DonationStatus,
     PublicDonorEntry,
+    WebhookEventRecord,
 )
 
 
@@ -62,6 +63,21 @@ class DonorRepository:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_created ON donations(created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_order ON donations(order_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_capture ON donations(capture_id)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT UNIQUE NOT NULL,
+                    event_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_event_id ON webhook_events(event_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_event_type ON webhook_events(event_type)")
             conn.commit()
 
     def create_donation(self, donation: DonationRecord) -> DonationRecord:
@@ -105,6 +121,91 @@ class DonorRepository:
             if not row:
                 return None
             return self._row_to_record(row)
+
+    def get_by_capture_id(self, capture_id: str) -> Optional[DonationRecord]:
+        """Fetch a single donation record by PayPal capture ID."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM donations WHERE capture_id = ?", (capture_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_record(row)
+
+    def record_refund(self, order_id: str, reason: Optional[str] = None) -> Optional[DonationRecord]:
+        """Mark a donation as REFUNDED and append reason to dedication note."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            note_suffix = f" [Refunded: {reason}]" if reason else " [Refunded]"
+            cur.execute(
+                """
+                UPDATE donations
+                SET status = 'REFUNDED',
+                    dedication = COALESCE(dedication, '') || ?
+                WHERE order_id = ?
+                """,
+                (note_suffix, order_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return self.get_by_order_id(order_id)
+
+    def is_webhook_event_processed(self, event_id: str) -> bool:
+        """Check if a webhook event has already been recorded (idempotency)."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM webhook_events WHERE event_id = ?", (event_id,))
+            return cur.fetchone() is not None
+
+    def record_webhook_event(
+        self,
+        event_id: str,
+        event_type: str,
+        resource_id: str,
+        status: str = "PROCESSED",
+        payload_json: Optional[str] = None,
+    ) -> WebhookEventRecord:
+        """Record a verified webhook event for audit trail."""
+        created_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO webhook_events (event_id, event_type, resource_id, status, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, event_type, resource_id, status, payload_json, created_str),
+            )
+            conn.commit()
+            return WebhookEventRecord(
+                id=cur.lastrowid,
+                event_id=event_id,
+                event_type=event_type,
+                resource_id=resource_id,
+                status=status,
+                payload_json=payload_json,
+                created_at=datetime.fromisoformat(created_str),
+            )
+
+    def list_webhook_events(self, limit: int = 50) -> List[WebhookEventRecord]:
+        """Retrieve recent webhook audit entries."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM webhook_events ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = cur.fetchall()
+            return [
+                WebhookEventRecord(
+                    id=r["id"],
+                    event_id=r["event_id"],
+                    event_type=r["event_type"],
+                    resource_id=r["resource_id"],
+                    status=r["status"],
+                    payload_json=r["payload_json"],
+                    created_at=datetime.fromisoformat(r["created_at"]),
+                )
+                for r in rows
+            ]
 
     def mark_receipt_sent(self, order_id: str) -> bool:
         """Update the receipt_sent flag to True."""

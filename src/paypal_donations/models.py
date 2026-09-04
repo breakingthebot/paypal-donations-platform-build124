@@ -122,3 +122,48 @@ class EmailReceiptPayload(BaseModel):
     org_email: str
     org_tax_id: str
     org_website: str
+
+
+class WebhookEventRecord(BaseModel):
+    """Processed PayPal webhook audit log record."""
+    id: Optional[int] = None
+    event_id: str
+    event_type: str
+    resource_id: str
+    status: str = "PROCESSED"
+    payload_json: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RefundRequest(BaseModel):
+    """Payload to initiate or record a donation refund."""
+    reason: Optional[str] = Field(None, max_length=250, description="Reason for the refund.")
+
+
+class RefundResult(BaseModel):
+    """Result of processing a donation refund."""
+    order_id: str
+    capture_id: Optional[str]
+    refund_id: str
+    amount: Decimal
+    currency: CurrencyCode
+    status: str = "REFUNDED"
+    receipt_sent: bool = False
+    message: str = "Donation refund processed successfully."
+
+
+class RefundReceiptPayload(BaseModel):
+    """Data packaged to render and dispatch a refund notification."""
+    receipt_id: str
+    order_id: str
+    capture_id: str
+    refund_id: str
+    donor_name: str
+    donor_email: str
+    amount: Decimal
+    currency: CurrencyCode
+    date_formatted: str
+    reason: Optional[str] = None
+    org_name: str
+    org_email: str
+    org_website: str

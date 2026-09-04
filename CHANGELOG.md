@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-04
+
+### Added
+- **PayPal Webhook Verification Engine (`WebhookManager`)**: Cryptographic signature validation verifying transmission headers (`PAYPAL-AUTH-ALGO`, `PAYPAL-CERT-URL`, `PAYPAL-TRANSMISSION-SIG`, etc.) with domain-whitelisted HTTPS certificate verification preventing SSRF attacks.
+- **Asynchronous Event Handlers**:
+  - `PAYMENT.CAPTURE.COMPLETED`: Ensures donations are recorded as completed and dispatches receipts if not yet sent.
+  - `PAYMENT.CAPTURE.REFUNDED`: Transitions donation status to `REFUNDED`, appends reason to donor notes, and automatically delivers a formal **Refund Confirmation Receipt**.
+  - `PAYMENT.CAPTURE.DENIED` / `CHECKOUT.ORDER.VOIDED`: Transitions status to `FAILED`.
+- **Persistent Webhook Audit Log**: SQLite `webhook_events` table for audit trails and idempotent deduplication of incoming events.
+- **REST Webhook & Refund Endpoints**:
+  - `POST /api/webhooks/paypal`: Real-time asynchronous PayPal webhook receiver.
+  - `POST /api/admin/donations/{order_id}/refund`: Administrative route to refund donations.
+  - `GET /api/admin/webhooks`: Audit inspection endpoint for received webhooks.
+- **Refund Notice Templates**: Responsive HTML and plaintext refund receipt templates in `EmailService`.
+- **New CLI Commands**:
+  - `paypal-donations webhooks list`: Terminal table of recent webhook notifications.
+  - `paypal-donations donations refund`: Command to issue refunds and dispatch notifications.
+- **Expanded Test Suite**: 9 new unit & integration tests covering webhook security, signature validation, idempotency, refund processing, and CLI commands (33 total passing tests).
+
 ## [1.0.0] - 2026-09-04
 
 ### Added

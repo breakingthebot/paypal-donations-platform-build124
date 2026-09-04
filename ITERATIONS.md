@@ -13,10 +13,31 @@ This document logs every incremental engineering iteration and git commit pushed
 | Iteration | Git Commit | Version | Focus / Summary | Tests Passed | Full Summary Archive |
 | :---: | :---: | :---: | :--- | :---: | :--- |
 | **01** | [`e0413ab`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/e0413ab) | `v1.0.0` | **Core PayPal v2 Integration, Automated Confirmation Receipts, Persistent SQLite Donor Log & Web Portal**<br>Complete PayPal Orders client with mock engine, SQLite database repository with anonymity masking, automated HTML/plaintext tax receipt mailer, FastAPI web backend, interactive Tailwind CSS donation portal, Click/Rich CLI suite (`paypal-donations`), and CI workflow. | 24 / 24 | [Iteration 01 Summary](docs/summaries/iteration_01_summary.md) |
+| **02** | [`5f0ca38`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/5f0ca38) | `v1.1.0` | **PayPal Webhooks Verification, Asynchronous Event Processing & Automated Refund Lifecycle**<br>Cryptographic signature verification engine with SSRF domain whitelisting, SQLite `webhook_events` audit and idempotency store, asynchronous routing for capture and refund events, automated refund receipts, REST webhook/refund endpoints, and CLI administration suite. | 33 / 33 | [Iteration 02 Summary](docs/summaries/iteration_02_summary.md) |
 
 ---
 
 ## Chronological Iteration Entries
+
+### Iteration 2: PayPal Webhooks Verification, Asynchronous Event Processing & Automated Refund Lifecycle
+- **Git Commit**: [`5f0ca38`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/5f0ca38)
+- **Tag / Version**: `v1.1.0`
+- **Date**: 2026-09-04
+- **Plain English Summary**:
+  Introduced a PayPal Webhooks engine (`WebhookManager`) verifying transmission headers and cryptographic signatures with domain-whitelisted HTTPS certificate verification. Added an event deduplication mechanism backed by SQLite to prevent replay attacks. Built an automated refund lifecycle that updates donation statuses to `REFUNDED`, records reasons, adjusts financial aggregations, and automatically dispatches formal refund confirmation receipts via HTML/plaintext emails. Added REST endpoints (`POST /api/webhooks/paypal`, `POST /api/admin/donations/{id}/refund`, `GET /api/admin/webhooks`) and CLI management tools (`paypal-donations webhooks list`, `paypal-donations donations refund`).
+- **Key Files Introduced / Modified**:
+  - `src/paypal_donations/webhooks.py`: Webhook verification, security validation, and asynchronous event routing.
+  - `src/paypal_donations/models.py`: Added `WebhookEventRecord`, `RefundRequest`, `RefundResult`, and `RefundReceiptPayload`.
+  - `src/paypal_donations/repository.py`: Added `webhook_events` schema, idempotency lookup, and refund updates.
+  - `src/paypal_donations/email_service.py`: Added refund receipt templates and dispatch methods.
+  - `src/paypal_donations/api.py`: Added webhook receiver, refund endpoint, and audit logs route.
+  - `src/paypal_donations/cli.py`: Added `donations refund` and `webhooks list` commands.
+  - `tests/test_webhooks.py`: 5 tests covering signature verification, header security, idempotency, and refund events.
+  - `tests/test_api.py`: Added integration tests for webhook ingestion and refund operations.
+  - `tests/test_cli.py`: Added CLI tests for refund and webhook commands.
+- **Test Results**: 33 Pytest unit & integration tests passing (3.41s).
+
+---
 
 ### Iteration 1: Core PayPal v2 Integration, Automated Confirmation Receipts, Persistent SQLite Donor Log & Web Portal
 - **Git Commit**: [`e0413ab`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/e0413ab)

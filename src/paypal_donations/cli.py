@@ -14,7 +14,7 @@ from rich.table import Table
 
 from paypal_donations import __version__
 from paypal_donations.email_service import EmailService
-from paypal_donations.models import CurrencyCode, EmailReceiptPayload
+from paypal_donations.models import CurrencyCode, EmailReceiptPayload, RefundReceiptPayload
 from paypal_donations.repository import DonorRepository
 
 console = Console()
@@ -167,6 +167,86 @@ def test_email(recipient: str, amount: float, name: str) -> None:
             console.print(f"[dim]Mock receipt file saved at: {mailer.dispatched_receipts[-1]['file_path']}[/dim]")
     else:
         console.print("[bold red]Failed to dispatch confirmation receipt.[/bold red]")
+
+
+@donations_group.command(name="refund")
+@click.option("--order", "order_id", required=True, help="PayPal Order ID to refund.")
+@click.option("--reason", default="Donor requested refund", help="Refund reason.")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def refund_donation_cli(order_id: str, reason: str, db: Optional[str]) -> None:
+    """Record a donation refund and issue a refund receipt notice."""
+    repo = get_repo(db)
+    donation = repo.get_by_order_id(order_id)
+    if not donation:
+        console.print(f"[bold red]Donation with Order ID {order_id} not found.[/bold red]")
+        sys.exit(1)
+
+    if donation.status.value == "REFUNDED":
+        console.print(f"[yellow]Donation {order_id} has already been marked as REFUNDED.[/yellow]")
+        return
+
+    updated = repo.record_refund(order_id=order_id, reason=reason)
+    if not updated:
+        console.print(f"[bold red]Failed to record refund for {order_id}.[/bold red]")
+        sys.exit(1)
+
+    mailer = EmailService(mode=os.getenv("EMAIL_MODE", "mock"))
+    refund_id = f"REF-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    payload = RefundReceiptPayload(
+        receipt_id=f"REF-{order_id[-6:]}",
+        order_id=order_id,
+        capture_id=donation.capture_id or order_id,
+        refund_id=refund_id,
+        donor_name=donation.donor_name,
+        donor_email=donation.donor_email,
+        amount=donation.amount,
+        currency=donation.currency,
+        date_formatted=datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC"),
+        reason=reason,
+        org_name=os.getenv("ORG_NAME", "Open Impact Foundation"),
+        org_email=os.getenv("ORG_EMAIL", "donations@openimpact.org"),
+        org_website=os.getenv("ORG_WEBSITE", "https://openimpact.org"),
+    )
+    sent = mailer.send_refund_receipt(payload)
+    console.print(f"[bold green]Donation {order_id} marked as REFUNDED.[/bold green]")
+    console.print(f"Refund Notice sent to: [cyan]{donation.donor_email}[/cyan] ([dim]sent={sent}[/dim])")
+
+
+@main.group(name="webhooks")
+def webhooks_group() -> None:
+    """Inspect and audit received PayPal webhooks."""
+    pass
+
+
+@webhooks_group.command(name="list")
+@click.option("--limit", default=20, type=int, help="Maximum webhook events to display.")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def list_webhooks_cli(limit: int, db: Optional[str]) -> None:
+    """Display recent webhook events received from PayPal."""
+    repo = get_repo(db)
+    events = repo.list_webhook_events(limit=limit)
+
+    if not events:
+        console.print("[yellow]No webhook events recorded in audit log.[/yellow]")
+        return
+
+    table = Table(title=f"PayPal Webhooks Audit Log (Latest {len(events)})", border_style="magenta")
+    table.add_column("Event ID", style="cyan", no_wrap=True)
+    table.add_column("Date (UTC)", style="dim")
+    table.add_column("Event Type", style="bold yellow")
+    table.add_column("Resource ID", style="green")
+    table.add_column("Status", style="bold")
+
+    for ev in events:
+        table.add_row(
+            ev.event_id,
+            ev.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            ev.event_type,
+            ev.resource_id,
+            f"[green]{ev.status}[/green]",
+        )
+
+    console.print(table)
 
 
 if __name__ == "__main__":

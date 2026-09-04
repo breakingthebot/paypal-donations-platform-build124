@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -23,9 +23,14 @@ from paypal_donations.models import (
     EmailReceiptPayload,
     OrderCreationResult,
     PublicDonorEntry,
+    RefundReceiptPayload,
+    RefundRequest,
+    RefundResult,
+    WebhookEventRecord,
 )
 from paypal_donations.paypal_client import PayPalClient, PayPalClientError
 from paypal_donations.repository import DonorRepository
+from paypal_donations.webhooks import WebhookManager, WebhookVerificationError
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -76,6 +81,18 @@ email_service = EmailService(
     smtp_password=_config["smtp_password"],
     smtp_from_email=_config["smtp_from_email"],
     smtp_use_tls=_config["smtp_use_tls"],
+)
+webhook_manager = WebhookManager(
+    paypal_client=paypal_client,
+    repo=repo,
+    email_service=email_service,
+    webhook_id=os.getenv("PAYPAL_WEBHOOK_ID", "MOCK-WEBHOOK-ID"),
+    org_metadata={
+        "org_name": _config["org_name"],
+        "org_email": _config["org_email"],
+        "org_tax_id": _config["org_tax_id"],
+        "org_website": _config["org_website"],
+    },
 )
 
 
@@ -233,6 +250,75 @@ def get_admin_donations(
 ) -> List[DonationRecord]:
     """Admin endpoint to retrieve raw donation records."""
     return repo.list_donations(limit=limit, offset=offset, status=status)
+
+
+@app.post("/api/webhooks/paypal")
+async def handle_paypal_webhook(request: Request) -> Dict[str, Any]:
+    """Asynchronous PayPal webhook receiver with cryptographic signature verification."""
+    headers = dict(request.headers)
+    body_bytes = await request.body()
+    raw_body = body_bytes.decode("utf-8")
+
+    try:
+        result = webhook_manager.process_webhook_event(headers, raw_body)
+        return result
+    except WebhookVerificationError as e:
+        logger.warning("PayPal webhook verification rejected: %s", e)
+        raise HTTPException(status_code=400, detail=f"Webhook verification failed: {e}")
+    except Exception as e:
+        logger.error("Error processing PayPal webhook: %s", e)
+        raise HTTPException(status_code=500, detail="Internal webhook processing error.")
+
+
+@app.post("/api/admin/donations/{order_id}/refund", response_model=RefundResult)
+def refund_donation(order_id: str, req: RefundRequest) -> RefundResult:
+    """Admin endpoint to process and record a donation refund."""
+    donation = repo.get_by_order_id(order_id)
+    if not donation:
+        raise HTTPException(status_code=404, detail=f"Donation with Order ID {order_id} not found.")
+
+    if donation.status == DonationStatus.REFUNDED:
+        raise HTTPException(status_code=400, detail="This donation has already been refunded.")
+
+    refund_id = f"REF-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    updated = repo.record_refund(order_id=order_id, reason=req.reason)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update donation status to REFUNDED.")
+
+    # Dispatch refund receipt
+    refund_payload = RefundReceiptPayload(
+        receipt_id=f"REF-{order_id[-6:]}",
+        order_id=order_id,
+        capture_id=donation.capture_id or order_id,
+        refund_id=refund_id,
+        donor_name=donation.donor_name,
+        donor_email=donation.donor_email,
+        amount=donation.amount,
+        currency=donation.currency,
+        date_formatted=datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC"),
+        reason=req.reason,
+        org_name=_config["org_name"],
+        org_email=_config["org_email"],
+        org_website=_config["org_website"],
+    )
+    sent = email_service.send_refund_receipt(refund_payload)
+
+    return RefundResult(
+        order_id=order_id,
+        capture_id=donation.capture_id,
+        refund_id=refund_id,
+        amount=donation.amount,
+        currency=donation.currency,
+        status="REFUNDED",
+        receipt_sent=sent,
+        message=f"Donation {order_id} has been refunded and notice sent to {donation.donor_email}.",
+    )
+
+
+@app.get("/api/admin/webhooks", response_model=List[WebhookEventRecord])
+def get_admin_webhooks(limit: int = Query(50, ge=1, le=200)) -> List[WebhookEventRecord]:
+    """Retrieve audit log of received PayPal webhook notifications."""
+    return repo.list_webhook_events(limit=limit)
 
 
 @app.get("/api/admin/export")

@@ -15,8 +15,10 @@ def clean_test_repo(tmp_path):
     # Override global repo in api module
     import paypal_donations.api as api_mod
     api_mod.repo = test_repo
+    api_mod.webhook_manager.repo = test_repo
     api_mod.email_service.receipts_dir = tmp_path / "api_receipts"
     api_mod.email_service.receipts_dir.mkdir(parents=True, exist_ok=True)
+    api_mod.webhook_manager.email_service = api_mod.email_service
     yield test_repo
 
 
@@ -119,3 +121,59 @@ def test_admin_export_csv_and_json(client):
     assert json_resp.status_code == 200
     assert "application/json" in json_resp.headers["content-type"]
     assert order_id in json_resp.text
+
+
+def test_webhook_endpoint_processing(client):
+    import uuid
+    evt_id = f"WH-API-{uuid.uuid4().hex[:8]}"
+    webhook_payload = {
+        "id": evt_id,
+        "event_type": "PAYMENT.CAPTURE.COMPLETED",
+        "resource": {"id": f"CAP-{uuid.uuid4().hex[:8]}"},
+    }
+    headers = {
+        "paypal-transmission-sig": "valid-sig-token",
+        "content-type": "application/json",
+    }
+    response = client.post("/api/webhooks/paypal", json=webhook_payload, headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "SUCCESS"
+    assert data["event_id"] == evt_id
+
+
+def test_admin_refund_donation_endpoint(client):
+    # Create & capture donation
+    create_resp = client.post(
+        "/api/donations/create-order",
+        json={
+            "amount": 75.00,
+            "currency": "USD",
+            "donor_name": "Refund Candidate",
+            "donor_email": "candidate@example.org",
+        },
+    )
+    order_id = create_resp.json()["order_id"]
+    client.post("/api/donations/capture-order", json={"order_id": order_id})
+
+    # Execute refund
+    refund_resp = client.post(
+        f"/api/admin/donations/{order_id}/refund",
+        json={"reason": "User requested cancellation within 24 hours"},
+    )
+    assert refund_resp.status_code == 200
+    ref_data = refund_resp.json()
+    assert ref_data["status"] == "REFUNDED"
+    assert ref_data["receipt_sent"] is True
+
+    # Duplicate refund attempt should fail
+    dup_resp = client.post(
+        f"/api/admin/donations/{order_id}/refund",
+        json={"reason": "Repeat request"},
+    )
+    assert dup_resp.status_code == 400
+
+    # Verify admin webhooks endpoint
+    wh_resp = client.get("/api/admin/webhooks")
+    assert wh_resp.status_code == 200
+    assert isinstance(wh_resp.json(), list)

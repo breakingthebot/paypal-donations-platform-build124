@@ -5,7 +5,52 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
 
-A modular payment and donor management solution featuring one-time **PayPal v2 Checkout** donation buttons, automated **HTML & plaintext tax receipt emails**, an **SQLite-backed donor log repository**, public donor rolls with anonymity safeguards, and an installable **command-line suite**.
+A modular payment and donor management solution featuring one-time **PayPal v2 Checkout** donation buttons, automated **HTML & plaintext tax receipt emails**, an **SQLite-backed donor log repository**, public donor rolls with anonymity safeguards, cryptographic **PayPal Webhook verification**, automated **refund lifecycle management**, and an installable **command-line suite**.
+
+---
+
+## Project Description
+
+**PayPal Donation Platform** is a production-grade, secure donation processing engine built for non-profit organizations, open-source maintainers, and community fundraising initiatives. 
+
+The system provides a seamless donor experience on the frontend and an enterprise-grade backend:
+- **One-Click Donations**: Donors can contribute via PayPal balance, debit/credit cards, or Venmo with preset amounts ($10, $25, $50, $100) or custom inputs across multiple global currencies (USD, EUR, GBP, CAD, AUD).
+- **Automated Tax Receipting**: Immediately upon successful payment capture, the system compiles and delivers an official 501(c)(3) tax receipt with unique receipt identifiers, deductible disclosures, and donor dedication notes.
+- **Asynchronous Webhook Automation**: Receives real-time PayPal notifications to guarantee that payments, voids, and refunds are synchronized idempotently even if the donor closes their browser before redirection.
+- **Privacy & Anonymity Safeguards**: Protects donor privacy by masking public rolls as "Anonymous Supporter" when requested, while preserving internal administrative records and tax receipts.
+- **Dual-Mode Architecture**: Out-of-the-box offline mock sandbox for zero-dependency local development and CI testing, with instant switching to live PayPal Sandbox or Production via environment variables.
+
+---
+
+## Topics Covered & Core Competencies
+
+This project demonstrates software engineering principles and technologies across the full stack:
+
+1. **Payment Gateway Engineering & PayPal v2 API**:
+   - OAuth 2.0 Client Credentials flow with in-memory Bearer token caching and proactive renewal.
+   - PayPal v2 Checkout Orders API (`/v2/checkout/orders` with `intent: CAPTURE` and `/capture`).
+   - PayPal Webhooks API with cryptographic signature verification and certificate URL domain safety.
+2. **PCI-DSS Compliance & Security Architecture**:
+   - SAQ-A compliance model: zero cardholder data (PAN, CVV, passwords) touches application memory or storage.
+   - Secure server-side credential isolation via environment variables (`.env`).
+   - Domain-whitelisted certificate verification preventing Server-Side Request Forgery (SSRF).
+   - Replay attack mitigation and webhook event deduplication using persistent idempotency keys.
+3. **Database Architecture & Data Integrity**:
+   - Relational database schema design in SQLite with secondary indexes for high-frequency queries.
+   - Transactional safety and context-managed connections preventing resource leakage on Windows/Unix.
+   - Aggregate financial analytics (currency-grouped sums, distinct donor counts, running averages).
+   - Streaming data exports to CSV and JSON formats.
+4. **Asynchronous Processing & Event-Driven Architecture**:
+   - Webhook state machine managing transaction lifecycles (`PENDING` &rarr; `COMPLETED` &rarr; `REFUNDED` &rarr; `FAILED`).
+   - Dedicated refund lifecycle engine that updates ledger balances and issues refund notifications.
+5. **Full-Stack Web Development**:
+   - FastAPI asynchronous web framework with Pydantic v2 schemas and auto-generated Swagger UI (`/docs`).
+   - Single-page responsive donation portal designed with Tailwind CSS, micro-interactions, and live metrics.
+6. **Command-Line Interface (CLI) Tooling**:
+   - Professional CLI built with Click and Rich, featuring formatted data tables, KPI summary cards, and administration commands.
+7. **Automated Testing & Continuous Integration**:
+   - 100% offline hermetic testing via Pytest, FastAPI `TestClient`, and Click `CliRunner`.
+   - GitHub Actions CI workflow executing multi-version matrix testing across Python 3.10, 3.11, and 3.12.
 
 ---
 
@@ -189,6 +234,16 @@ paypal-donations donations export --format csv --output storage/donations.csv
 paypal-donations donations export --format json --output storage/donations.json
 ```
 
+### Refund a Donation
+```bash
+paypal-donations donations refund --order ORDER-12345 --reason "Donor requested refund"
+```
+
+### Audit Received Webhooks
+```bash
+paypal-donations webhooks list --limit 15
+```
+
 ### Send Test Confirmation Receipt
 ```bash
 paypal-donations donations test-email --recipient donor@example.com --amount 50.00 --name "Taylor Swift"
@@ -204,9 +259,12 @@ paypal-donations donations test-email --recipient donor@example.com --amount 50.
 | `GET` | `/api/config` | Non-sensitive frontend configuration (currency, org name). |
 | `POST`| `/api/donations/create-order` | Initiates PayPal order and creates pending log. |
 | `POST`| `/api/donations/capture-order`| Finalizes payment and triggers automated receipt dispatch. |
+| `POST`| `/api/webhooks/paypal` | Real-time PayPal webhook receiver with signature verification. |
+| `POST`| `/api/admin/donations/{order_id}/refund` | Process donation refund and trigger refund notice email. |
 | `GET` | `/api/donations/donors` | Public donor list with anonymous masking. |
 | `GET` | `/api/donations/stats` | Aggregated total raised, donor count, and averages. |
 | `GET` | `/api/admin/donations` | Complete administrative donor log with filter support. |
+| `GET` | `/api/admin/webhooks` | Audit log of received and processed PayPal webhooks. |
 | `GET` | `/api/admin/export` | Download complete donor history as CSV or JSON. |
 
 ---
