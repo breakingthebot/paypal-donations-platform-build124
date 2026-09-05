@@ -15,10 +15,28 @@ This document logs every incremental engineering iteration and git commit pushed
 | **01** | [`e0413ab`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/e0413ab) | `v1.0.0` | **Core PayPal v2 Integration, Automated Confirmation Receipts, Persistent SQLite Donor Log & Web Portal**<br>Complete PayPal Orders client with mock engine, SQLite database repository with anonymity masking, automated HTML/plaintext tax receipt mailer, FastAPI web backend, interactive Tailwind CSS donation portal, Click/Rich CLI suite (`paypal-donations`), and CI workflow. | 24 / 24 | [Iteration 01 Summary](docs/summaries/iteration_01_summary.md) |
 | **02** | [`5f0ca38`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/5f0ca38) | `v1.1.0` | **PayPal Webhooks Verification, Asynchronous Event Processing & Automated Refund Lifecycle**<br>Cryptographic signature verification engine with SSRF domain whitelisting, SQLite `webhook_events` audit and idempotency store, asynchronous routing for capture and refund events, automated refund receipts, REST webhook/refund endpoints, and CLI administration suite. | 33 / 33 | [Iteration 02 Summary](docs/summaries/iteration_02_summary.md) |
 | **03** | [`faf302c`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/faf302c) | `v1.2.0` | **Recurring Pledges & Monthly Sustainer Subscriptions, MRR Analytics Engine, Subscription Webhooks & CLI Management**<br>PayPal Subscriptions integration, SQLite `subscriptions` schema with multi-currency MRR calculation, automated cycle payment recording with tax receipt delivery via `PAYMENT.SALE.COMPLETED` webhooks, REST pledge/cancel endpoints, and `paypal-donations subscriptions` CLI suite. | 45 / 45 | [Iteration 03 Summary](docs/summaries/iteration_03_summary.md) |
+| **04** | [`cf6ba06`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/cf6ba06) | `v1.3.0` | **Fundraising Campaign Drives, Goal Progress Bars, Campaign Donor Attribution & Analytics**<br>Targeted campaign drives model and schema migration, dynamic funding progress calculation engine, campaign-filtered donor rolls, REST endpoints (`/api/campaigns`), interactive web portal Featured Campaign hero card with animated progress meter bar, and `paypal-donations campaigns` CLI suite (`list`, `create`, `show`). | 52 / 52 | [Iteration 04 Summary](docs/summaries/iteration_04_summary.md) |
 
 ---
 
 ## Chronological Iteration Entries
+
+### Iteration 4: Fundraising Campaign Drives, Goal Progress Bars, Campaign Donor Attribution & Analytics
+- **Git Commit**: [`cf6ba06`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/cf6ba06)
+- **Tag / Version**: `v1.3.0`
+- **Date**: 2026-09-04
+- **Plain English Summary**:
+  Introduced first-class support for targeted fundraising drives and live goal progress tracking. Added an SQLite `campaigns` table schema, automatic migration of existing `donations` records with campaign slug indexing, and default seed drive (`clean-water-2026`). Implemented dynamic goal progress calculation computing amount raised, percentage of target funded, donor counts, and remaining amounts. Built a full REST API suite for campaigns (`GET /api/campaigns`, `POST /api/campaigns`, `GET /api/campaigns/{slug}`, `GET /api/campaigns/{slug}/donors`, `POST /api/campaigns/{slug}/status`), enhanced donation creation/capture to attribute gifts to specific drives, added a dynamic Featured Campaign card with an animated progress bar and campaign selector to the web donation portal, and created the `paypal-donations campaigns` CLI administration suite.
+- **Key Files Introduced / Modified**:
+  - `src/paypal_donations/models.py`: Added `CampaignStatus`, `CampaignCreate`, `CampaignRecord`, `CampaignProgress`, and `campaign_slug` fields.
+  - `src/paypal_donations/repository.py`: Added `campaigns` table schema, migration logic, campaign CRUD, progress calculation, and campaign-filtered donor walls.
+  - `src/paypal_donations/api.py`: Added campaign REST endpoints, donation attribution, checkout campaign dropdown, and featured progress meter card.
+  - `src/paypal_donations/cli.py`: Added `campaigns` command group (`list`, `create`, `show`).
+  - `tests/test_campaigns.py`: 7 unit & integration tests covering repository operations, progress calculation, API endpoints, and CLI commands.
+  - `docs/summaries/iteration_04_summary.md`: Iteration 4 technical archive.
+- **Test Results**: 52 Pytest unit & integration tests passing (10.98s).
+
+---
 
 ### Iteration 3: Recurring Pledges & Monthly Sustainer Subscriptions, MRR Analytics Engine, Subscription Webhooks & CLI Management
 - **Git Commit**: [`faf302c`](https://github.com/breakingthebot/paypal-donations-platform-build124/commit/faf302c)

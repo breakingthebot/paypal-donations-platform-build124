@@ -14,7 +14,13 @@ from rich.table import Table
 
 from paypal_donations import __version__
 from paypal_donations.email_service import EmailService
-from paypal_donations.models import CurrencyCode, EmailReceiptPayload, RefundReceiptPayload
+from paypal_donations.models import (
+    CampaignCreate,
+    CampaignStatus,
+    CurrencyCode,
+    EmailReceiptPayload,
+    RefundReceiptPayload,
+)
 from paypal_donations.repository import DonorRepository
 
 console = Console()
@@ -323,6 +329,102 @@ def cancel_subscription_cli(sub_id: str, reason: str, db: Optional[str]) -> None
 
     repo.update_subscription_status(sub_id, "CANCELLED", reason=reason)
     console.print(f"[bold green]Subscription {sub_id} has been cancelled.[/bold green]")
+
+
+@main.group(name="campaigns")
+def campaigns_group() -> None:
+    """Manage and inspect targeted fundraising campaign drives."""
+    pass
+
+
+@campaigns_group.command(name="list")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def list_campaigns_cli(db: Optional[str]) -> None:
+    """Display all fundraising campaign drives with goal progress."""
+    repo = get_repo(db)
+    campaigns = repo.list_campaign_progress()
+
+    if not campaigns:
+        console.print("[yellow]No campaigns found in database.[/yellow]")
+        return
+
+    table = Table(title=f"Fundraising Campaign Drives ({len(campaigns)})", border_style="cyan")
+    table.add_column("Slug", style="cyan", no_wrap=True)
+    table.add_column("Title", style="bold")
+    table.add_column("Goal", justify="right", style="green")
+    table.add_column("Raised", justify="right", style="bold green")
+    table.add_column("Progress", justify="center")
+    table.add_column("Donors", justify="center", style="magenta")
+    table.add_column("Status", style="bold")
+
+    for c in campaigns:
+        status_color = "green" if c.status == CampaignStatus.ACTIVE else "yellow"
+        pct_color = "green" if c.percent_raised >= 100 else "cyan" if c.percent_raised >= 50 else "yellow"
+        progress_str = f"[{pct_color}]{c.percent_raised:.1f}%[/{pct_color}]"
+
+        table.add_row(
+            c.slug,
+            c.title,
+            f"{c.goal_amount:.2f} {c.currency.value}",
+            f"{c.current_amount:.2f} {c.currency.value}",
+            progress_str,
+            str(c.unique_donors),
+            f"[{status_color}]{c.status.value}[/{status_color}]",
+        )
+
+    console.print(table)
+
+
+@campaigns_group.command(name="create")
+@click.option("--title", required=True, help="Campaign title name.")
+@click.option("--slug", required=True, help="URL-friendly slug (e.g. clean-water-2026).")
+@click.option("--goal", required=True, type=float, help="Target fundraising goal.")
+@click.option("--currency", default="USD", help="Currency code (USD, EUR, GBP, CAD, AUD).")
+@click.option("--description", default=None, help="Campaign narrative or mission description.")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def create_campaign_cli(title: str, slug: str, goal: float, currency: str, description: Optional[str], db: Optional[str]) -> None:
+    """Create a new targeted fundraising campaign drive."""
+    repo = get_repo(db)
+    try:
+        camp = repo.create_campaign(
+            CampaignCreate(
+                title=title,
+                slug=slug,
+                goal_amount=Decimal(str(goal)),
+                currency=CurrencyCode(currency.upper()),
+                description=description,
+            )
+        )
+        console.print(f"[bold green]Campaign '{camp.title}' ({camp.slug}) created successfully![/bold green]")
+        console.print(f"Goal: [cyan]${camp.goal_amount:.2f} {camp.currency.value}[/cyan]")
+    except ValueError as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
+        sys.exit(1)
+
+
+@campaigns_group.command(name="show")
+@click.argument("slug")
+@click.option("--db", default=None, help="Custom SQLite database path.")
+def show_campaign_cli(slug: str, db: Optional[str]) -> None:
+    """Display detailed metrics and progress for a campaign."""
+    repo = get_repo(db)
+    prog = repo.get_campaign_progress(slug)
+    if not prog:
+        console.print(f"[bold red]Campaign '{slug}' not found.[/bold red]")
+        sys.exit(1)
+
+    grid = Table.grid(expand=True, padding=(0, 2))
+    grid.add_column(justify="center")
+    grid.add_column(justify="center")
+    grid.add_column(justify="center")
+
+    grid.add_row(
+        Panel(f"[bold green]${prog.current_amount:.2f}[/bold green] / ${prog.goal_amount:.2f}", title="[cyan]Raised / Goal[/cyan]"),
+        Panel(f"[bold cyan]{prog.percent_raised:.1f}%[/bold cyan]", title="[cyan]% Funded[/cyan]"),
+        Panel(f"[bold magenta]{prog.unique_donors}[/bold magenta] ({prog.donations_count} gifts)", title="[cyan]Supporters[/cyan]"),
+    )
+
+    console.print(Panel(grid, title=f"[bold]{prog.title} ({prog.slug})[/bold]", subtitle=f"Status: {prog.status.value}", border_style="cyan"))
 
 
 if __name__ == "__main__":

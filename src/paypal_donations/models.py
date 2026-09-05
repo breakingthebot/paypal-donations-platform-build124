@@ -41,6 +41,7 @@ class CreateOrderRequest(BaseModel):
     donor_email: str = Field(..., description="Email address for receipt delivery.")
     dedication: Optional[str] = Field(None, max_length=250, description="Optional honor or memory dedication message.")
     is_anonymous: bool = Field(default=False, description="Whether to hide donor name on public donor roll.")
+    campaign_slug: Optional[str] = Field(None, description="Optional campaign slug to attribute donation to.")
 
     @field_validator("donor_email")
     @classmethod
@@ -73,6 +74,7 @@ class CaptureOrderRequest(BaseModel):
     donor_email: Optional[str] = None
     dedication: Optional[str] = None
     is_anonymous: Optional[bool] = None
+    campaign_slug: Optional[str] = None
 
 
 class DonationRecord(BaseModel):
@@ -87,6 +89,7 @@ class DonationRecord(BaseModel):
     status: DonationStatus = DonationStatus.COMPLETED
     dedication: Optional[str] = None
     is_anonymous: bool = False
+    campaign_slug: Optional[str] = None
     receipt_sent: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -102,6 +105,7 @@ class PublicDonorEntry(BaseModel):
     amount: Decimal
     currency: CurrencyCode
     dedication: Optional[str] = None
+    campaign_slug: Optional[str] = None
     created_at: datetime
 
 
@@ -232,4 +236,73 @@ class RecurringMetrics(BaseModel):
     active_subscribers: int = 0
     mrr_by_currency: Dict[str, Decimal] = Field(default_factory=dict)
     total_active_pledged_monthly: Decimal = Decimal("0.00")
+
+
+class CampaignStatus(str, Enum):
+    """Status lifecycle for fundraising campaigns."""
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+    ARCHIVED = "ARCHIVED"
+
+
+class CampaignCreate(BaseModel):
+    """Payload to create a new targeted fundraising campaign."""
+    title: str = Field(..., min_length=2, max_length=150, description="Campaign title")
+    slug: str = Field(..., min_length=2, max_length=80, description="URL-friendly unique slug (e.g. clean-water-2026)")
+    description: Optional[str] = Field(None, max_length=500, description="Goal narrative or project summary")
+    goal_amount: Decimal = Field(..., gt=Decimal("0.00"), description="Financial target goal")
+    currency: CurrencyCode = Field(default=CurrencyCode.USD, description="Target currency")
+    start_date: Optional[str] = Field(None, description="ISO formatted start date string")
+    end_date: Optional[str] = Field(None, description="ISO formatted target completion date")
+
+    @field_validator("slug")
+    @classmethod
+    def clean_slug(cls, v: str) -> str:
+        clean = v.strip().lower().replace(" ", "-").replace("_", "-")
+        # Ensure only alphanumeric and dashes
+        valid_chars = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+        if not all(c in valid_chars for c in clean):
+            raise ValueError("Campaign slug may only contain letters, numbers, and hyphens.")
+        return clean
+
+    @field_validator("goal_amount")
+    @classmethod
+    def round_goal(cls, v: Decimal) -> Decimal:
+        return Decimal(f"{v:.2f}")
+
+
+class CampaignRecord(BaseModel):
+    """Persistent SQLite record for a fundraising campaign."""
+    id: Optional[int] = None
+    slug: str
+    title: str
+    description: Optional[str] = None
+    goal_amount: Decimal
+    currency: CurrencyCode
+    status: CampaignStatus = CampaignStatus.ACTIVE
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CampaignProgress(BaseModel):
+    """Real-time progress and metric calculation for a campaign."""
+    id: int
+    slug: str
+    title: str
+    description: Optional[str] = None
+    goal_amount: Decimal
+    currency: CurrencyCode
+    status: CampaignStatus
+    current_amount: Decimal = Decimal("0.00")
+    percent_raised: float = 0.0
+    donations_count: int = 0
+    unique_donors: int = 0
+    is_goal_met: bool = False
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    created_at: datetime
+
 

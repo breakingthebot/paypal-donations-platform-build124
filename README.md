@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
 
-A modular payment and donor management solution featuring one-time **PayPal v2 Checkout** donation buttons, recurring **Monthly Sustainer Pledges & Subscriptions**, automated **HTML & plaintext tax receipt emails**, an **SQLite-backed donor log repository**, public donor rolls with anonymity safeguards, cryptographic **PayPal Webhook verification**, automated **refund lifecycle management**, and an installable **command-line suite**.
+A modular payment and donor management solution featuring one-time **PayPal v2 Checkout** donation buttons, recurring **Monthly Sustainer Pledges & Subscriptions**, targeted **Fundraising Campaign Drives & Dynamic Goal Progress Bars**, automated **HTML & plaintext tax receipt emails**, an **SQLite-backed donor log repository**, public donor rolls with anonymity safeguards, cryptographic **PayPal Webhook verification**, automated **refund lifecycle management**, and an installable **command-line suite**.
 
 ---
 
@@ -15,6 +15,7 @@ A modular payment and donor management solution featuring one-time **PayPal v2 C
 
 The system provides a seamless donor experience on the frontend and an enterprise-grade backend:
 - **One-Click Donations & Recurring Pledges**: Donors can contribute one-time or become recurring monthly sustainers via PayPal balance, debit/credit cards, or Venmo with preset amounts ($10, $25, $50, $100) or custom inputs across multiple global currencies (USD, EUR, GBP, CAD, AUD).
+- **Targeted Campaign Drives & Goal Progress**: Organizations can create targeted fundraising campaigns (e.g., *Clean Water Initiative 2026*, *Hospital Relief*) with defined financial goals, real-time percentage progress bars, and dedicated campaign donor walls.
 - **Automated Tax Receipting**: Immediately upon successful payment capture or recurring subscription execution, the system compiles and delivers an official 501(c)(3) tax receipt with unique receipt identifiers, deductible disclosures, and donor dedication notes.
 - **Asynchronous Webhook Automation**: Receives real-time PayPal notifications (`PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.REFUNDED`, `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`, `PAYMENT.SALE.COMPLETED`) to guarantee that payments, subscriptions, and refunds are synchronized idempotently.
 - **Recurring Metrics & MRR Tracking**: Automatically aggregates active monthly sustainers, computes Monthly Recurring Revenue (MRR) grouped by currency, and manages subscription cancellation workflows.
@@ -39,19 +40,20 @@ This project demonstrates software engineering principles and technologies acros
    - Replay attack mitigation and webhook event deduplication using persistent idempotency keys.
 3. **Database Architecture & Data Integrity**:
    - Relational database schema design in SQLite with secondary indexes for high-frequency queries.
-   - Separate indexed relational tables for one-time donations, recurring subscriptions, and webhook audit trails.
+   - Separate indexed relational tables for one-time donations, recurring subscriptions, campaigns, and webhook audit trails.
+   - Safe schema migrations ensuring existing databases seamlessly adopt new schema columns (`campaign_slug`).
    - Transactional safety and context-managed connections preventing resource leakage on Windows/Unix.
-   - Aggregate financial analytics (currency-grouped sums, distinct donor counts, running averages, Monthly Recurring Revenue).
-   - Streaming data exports to CSV and JSON formats.
+   - Aggregate financial analytics (currency-grouped sums, campaign funding percentages, distinct donor counts, running averages, Monthly Recurring Revenue).
+   - Streaming data exports to CSV and JSON formats with campaign attribution.
 4. **Asynchronous Processing & Event-Driven Architecture**:
    - Webhook state machine managing transaction lifecycles (`PENDING` &rarr; `COMPLETED` &rarr; `REFUNDED` &rarr; `FAILED`).
    - Subscription lifecycle automation (`BILLING.SUBSCRIPTION.ACTIVATED`, `CANCELLED`, and `PAYMENT.SALE.COMPLETED`).
    - Dedicated refund lifecycle engine that updates ledger balances and issues refund notifications.
 5. **Full-Stack Web Development**:
    - FastAPI asynchronous web framework with Pydantic v2 schemas and auto-generated Swagger UI (`/docs`).
-   - Single-page responsive donation portal designed with Tailwind CSS, frequency toggles ("Give Once" vs "Give Monthly"), micro-interactions, and live metrics.
+   - Single-page responsive donation portal designed with Tailwind CSS, featured campaign progress bar meters, campaign designation selectors, frequency toggles ("Give Once" vs "Give Monthly"), micro-interactions, and live metrics.
 6. **Command-Line Interface (CLI) Tooling**:
-   - Professional CLI built with Click and Rich, featuring formatted data tables, KPI summary cards, subscription monitoring, and administration commands.
+   - Professional CLI built with Click and Rich, featuring formatted data tables, campaign goal tracking, KPI summary cards, subscription monitoring, and administration commands.
 7. **Automated Testing & Continuous Integration**:
    - 100% offline hermetic testing via Pytest, FastAPI `TestClient`, and Click `CliRunner`.
    - GitHub Actions CI workflow executing multi-version matrix testing across Python 3.10, 3.11, and 3.12.
@@ -67,13 +69,14 @@ This project demonstrates software engineering principles and technologies acros
 ## Key Features
 
 - **PayPal v2 Checkout & Subscriptions Integration**: Supports one-time donations via PayPal Orders API and ongoing recurring sustainer pledges via PayPal Subscriptions API (`/v1/billing/subscriptions`).
+- **Targeted Fundraising Campaigns & Progress Bars**: Create custom campaign drives with target financial goals, automated progress calculation, and campaign-attributed donor walls.
 - **Built-in Mock Sandbox & Live Modes**: Seamlessly switch between zero-credential offline development/testing (`PAYPAL_MODE=mock`), official PayPal Sandbox (`PAYPAL_MODE=sandbox`), or production (`PAYPAL_MODE=live`).
 - **Automated Tax Confirmation Receipts**: Automatically compiles and renders responsive HTML and ASCII plaintext receipts for one-time contributions and subscription cycles.
-- **Persistent SQLite Donor Store**: Transaction-safe local storage tracking one-time orders, recurring subscriptions, donor metadata, amounts, currencies, and receipt delivery status.
+- **Persistent SQLite Donor Store**: Transaction-safe local storage tracking one-time orders, recurring subscriptions, campaign metadata, amounts, currencies, and receipt delivery status.
 - **Monthly Recurring Revenue (MRR) Analytics**: Tracks active sustainer counts and calculates pledged recurring monthly income broken down by currency.
-- **Privacy-Preserving Public Donor Wall**: Exposes sanitized public donor records (`GET /api/donations/donors`) honoring donor anonymity preferences ("Anonymous Supporter").
+- **Privacy-Preserving Public Donor Wall**: Exposes sanitized public donor records (`GET /api/donations/donors`) with optional campaign filtering and donor anonymity preferences ("Anonymous Supporter").
 - **Financial Analytics & Export**: Computes total raised by currency, donor counts, and average contributions. Supports one-click CSV and JSON exports for bookkeeping.
-- **Installable CLI (`paypal-donations`)**: Terminal tool powered by Click and Rich for viewing formatted donor rolls, checking financial statistics, managing recurring subscriptions, exporting data, testing email delivery, and starting the web server.
+- **Installable CLI (`paypal-donations`)**: Terminal tool powered by Click and Rich for viewing formatted donor rolls, tracking campaign progress, checking financial statistics, managing recurring subscriptions, exporting data, testing email delivery, and starting the web server.
 
 ---
 
@@ -133,6 +136,7 @@ paypal-donations-platform/
 │       └── webhooks.py            # Cryptographic webhook verification and event routing
 ├── tests/
 │   ├── test_api.py                # FastAPI route and integration tests
+│   ├── test_campaigns.py          # Campaign drive CRUD, progress meters, and filtering tests
 │   ├── test_cli.py                # Click CliRunner test suite
 │   ├── test_email_service.py      # Email rendering and receipt generation tests
 │   ├── test_paypal_client.py      # PayPal client authentication and capture tests
@@ -220,7 +224,7 @@ paypal-donations --version
 ```
 *Output:*
 ```text
-paypal-donations 1.2.0
+paypal-donations 1.3.0
 ```
 
 ### View Live Donor Roll
@@ -231,6 +235,22 @@ paypal-donations donations list --limit 10
 ### Display Financial Statistics
 ```bash
 paypal-donations donations stats
+```
+
+### Manage Fundraising Campaigns
+```bash
+# List all active campaigns and goal progress
+paypal-donations campaigns list
+
+# Create a new fundraising drive
+paypal-donations campaigns create \
+  --title "Emergency Relief Fund 2026" \
+  --slug "emergency-relief-2026" \
+  --goal 15000.00 \
+  --description "Rapid response funding for regional humanitarian aid."
+
+# Inspect details and progress metrics for a specific campaign
+paypal-donations campaigns show emergency-relief-2026
 ```
 
 ### Manage Recurring Sustainer Subscriptions
@@ -277,15 +297,20 @@ paypal-donations donations test-email --recipient donor@example.com --amount 50.
 | :--- | :--- | :--- |
 | `GET` | `/health` | Service health status, active modes, and version. |
 | `GET` | `/api/config` | Non-sensitive frontend configuration (currency, org name). |
-| `POST`| `/api/donations/create-order` | Initiates PayPal order and creates pending log. |
+| `POST`| `/api/donations/create-order` | Initiates PayPal order and creates pending log (optional campaign attribution). |
 | `POST`| `/api/donations/capture-order`| Finalizes payment and triggers automated receipt dispatch. |
 | `POST`| `/api/donations/create-subscription` | Sets up a recurring monthly/annual pledge via PayPal Subscriptions. |
 | `GET` | `/api/donations/recurring-stats` | Monthly Recurring Revenue (MRR) metrics and active sustaining donor counts. |
+| `GET` | `/api/campaigns` | List active fundraising campaigns with goal amounts, progress %, and metrics. |
+| `POST`| `/api/campaigns` | Create a new fundraising campaign drive. |
+| `GET` | `/api/campaigns/{slug}` | Retrieve detailed campaign info, amount raised, and progress percentage. |
+| `GET` | `/api/campaigns/{slug}/donors` | Filtered public donor wall for a specific fundraising drive. |
+| `POST`| `/api/campaigns/{slug}/status` | Update campaign status (`active`, `paused`, `completed`, `archived`). |
 | `POST`| `/api/webhooks/paypal` | Real-time PayPal webhook receiver with signature verification. |
 | `POST`| `/api/admin/donations/{order_id}/refund` | Process donation refund and trigger refund notice email. |
 | `GET` | `/api/admin/subscriptions` | Administrative list of recurring pledge agreements with status filters. |
 | `POST`| `/api/admin/subscriptions/{id}/cancel` | Cancel an active recurring subscription with reason notes. |
-| `GET` | `/api/donations/donors` | Public donor list with anonymous masking. |
+| `GET` | `/api/donations/donors` | Public donor list with anonymous masking (supports `?campaign_slug=`). |
 | `GET` | `/api/donations/stats` | Aggregated total raised, donor count, and averages. |
 | `GET` | `/api/admin/donations` | Complete administrative donor log with filter support. |
 | `GET` | `/api/admin/webhooks` | Audit log of received and processed PayPal webhooks. |

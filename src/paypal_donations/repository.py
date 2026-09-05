@@ -10,9 +10,13 @@ import sqlite3
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 from paypal_donations.models import (
+    CampaignCreate,
+    CampaignProgress,
+    CampaignRecord,
+    CampaignStatus,
     CurrencyCode,
     DonationFrequency,
     DonationRecord,
@@ -59,6 +63,7 @@ class DonorRepository:
                     status TEXT NOT NULL,
                     dedication TEXT,
                     is_anonymous INTEGER NOT NULL DEFAULT 0,
+                    campaign_slug TEXT,
                     receipt_sent INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 )
@@ -67,6 +72,14 @@ class DonorRepository:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_order ON donations(order_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_capture ON donations(capture_id)")
+            # Safe migration: ensure campaign_slug column exists in existing tables
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(donations)")
+            existing_cols = [r["name"] for r in cur.fetchall()]
+            if "campaign_slug" not in existing_cols:
+                conn.execute("ALTER TABLE donations ADD COLUMN campaign_slug TEXT")
+
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_campaign ON donations(campaign_slug)")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -101,6 +114,46 @@ class DonorRepository:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_id ON subscriptions(subscription_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_email ON subscriptions(donor_email)")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    goal_amount NUMERIC NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    start_date TEXT,
+                    end_date TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_slug ON campaigns(slug)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status)")
+
+            # Seed default campaign if table is empty
+            cur.execute("SELECT COUNT(*) as cnt FROM campaigns")
+            row = cur.fetchone()
+            if row and row["cnt"] == 0:
+                now_str = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO campaigns (slug, title, description, goal_amount, currency, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "clean-water-2026",
+                        "Clean Water Initiative 2026",
+                        "Solar-powered clean water filtration wells for rural communities.",
+                        "10000.00",
+                        "USD",
+                        "ACTIVE",
+                        now_str,
+                        now_str,
+                    ),
+                )
             conn.commit()
 
     def create_donation(self, donation: DonationRecord) -> DonationRecord:
@@ -113,8 +166,8 @@ class DonorRepository:
                 INSERT INTO donations (
                     order_id, capture_id, donor_name, donor_email,
                     amount, currency, status, dedication,
-                    is_anonymous, receipt_sent, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_anonymous, campaign_slug, receipt_sent, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     donation.order_id,
@@ -126,6 +179,7 @@ class DonorRepository:
                     donation.status.value if hasattr(donation.status, "value") else str(donation.status),
                     donation.dedication,
                     1 if donation.is_anonymous else 0,
+                    donation.campaign_slug,
                     1 if donation.receipt_sent else 0,
                     created_at_str,
                 ),
@@ -395,28 +449,36 @@ class DonorRepository:
             rows = cur.fetchall()
             return [self._row_to_record(r) for r in rows]
 
-    def get_public_wall(self, limit: int = 20) -> List[PublicDonorEntry]:
-        """Retrieve recent donations sanitized for public donor rolls."""
+    def get_public_wall(self, limit: int = 20, campaign_slug: Optional[str] = None) -> List[PublicDonorEntry]:
+        """Retrieve recent donations sanitized for public donor rolls with optional campaign filter."""
         query = """
-            SELECT donor_name, amount, currency, dedication, is_anonymous, created_at
+            SELECT donor_name, amount, currency, dedication, is_anonymous, campaign_slug, created_at
             FROM donations
             WHERE status = 'COMPLETED'
-            ORDER BY created_at DESC
-            LIMIT ?
         """
+        params: List[Any] = []
+        if campaign_slug:
+            query += " AND campaign_slug = ?"
+            params.append(campaign_slug)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(query, (limit,))
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
             entries: List[PublicDonorEntry] = []
             for r in rows:
                 is_anon = bool(r["is_anonymous"])
+                keys = r.keys()
+                c_slug = r["campaign_slug"] if "campaign_slug" in keys else None
                 entries.append(
                     PublicDonorEntry(
                         donor_name="Anonymous Supporter" if is_anon else r["donor_name"],
                         amount=Decimal(str(r["amount"])),
                         currency=CurrencyCode(r["currency"]),
                         dedication=r["dedication"],
+                        campaign_slug=c_slug,
                         created_at=datetime.fromisoformat(r["created_at"]),
                     )
                 )
@@ -479,14 +541,14 @@ class DonorRepository:
             writer = csv.writer(f)
             writer.writerow([
                 "ID", "Order ID", "Capture ID", "Donor Name", "Donor Email",
-                "Amount", "Currency", "Status", "Dedication", "Anonymous",
+                "Amount", "Currency", "Status", "Dedication", "Campaign", "Anonymous",
                 "Receipt Sent", "Created At"
             ])
             for d in donations:
                 writer.writerow([
                     d.id, d.order_id, d.capture_id or "", d.donor_name, d.donor_email,
                     f"{d.amount:.2f}", d.currency.value, d.status.value, d.dedication or "",
-                    d.is_anonymous, d.receipt_sent, d.created_at.isoformat()
+                    d.campaign_slug or "", d.is_anonymous, d.receipt_sent, d.created_at.isoformat()
                 ])
         return str(target)
 
@@ -501,8 +563,167 @@ class DonorRepository:
             json.dump(data, f, indent=2, default=str)
         return str(target)
 
+    def create_campaign(self, campaign: CampaignCreate) -> CampaignRecord:
+        """Create and persist a new fundraising campaign."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM campaigns WHERE slug = ?", (campaign.slug,))
+            if cur.fetchone():
+                raise ValueError(f"Campaign with slug '{campaign.slug}' already exists.")
+
+            cur.execute(
+                """
+                INSERT INTO campaigns (
+                    slug, title, description, goal_amount, currency,
+                    status, start_date, end_date, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    campaign.slug,
+                    campaign.title,
+                    campaign.description,
+                    str(campaign.goal_amount),
+                    campaign.currency.value,
+                    CampaignStatus.ACTIVE.value,
+                    campaign.start_date,
+                    campaign.end_date,
+                    now_str,
+                    now_str,
+                ),
+            )
+            conn.commit()
+            return CampaignRecord(
+                id=cur.lastrowid,
+                slug=campaign.slug,
+                title=campaign.title,
+                description=campaign.description,
+                goal_amount=campaign.goal_amount,
+                currency=campaign.currency,
+                status=CampaignStatus.ACTIVE,
+                start_date=campaign.start_date,
+                end_date=campaign.end_date,
+                created_at=datetime.fromisoformat(now_str),
+                updated_at=datetime.fromisoformat(now_str),
+            )
+
+    def get_campaign(self, slug_or_id: Union[str, int]) -> Optional[CampaignRecord]:
+        """Fetch campaign by slug or integer ID."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if isinstance(slug_or_id, int) or (isinstance(slug_or_id, str) and slug_or_id.isdigit()):
+                cur.execute("SELECT * FROM campaigns WHERE id = ?", (int(slug_or_id),))
+            else:
+                cur.execute("SELECT * FROM campaigns WHERE slug = ?", (str(slug_or_id),))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_campaign(row)
+
+    def list_campaigns(self, status: Optional[CampaignStatus] = None) -> List[CampaignRecord]:
+        """List campaigns with optional status filtering."""
+        query = "SELECT * FROM campaigns"
+        params: List[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status.value if hasattr(status, "value") else str(status))
+        query += " ORDER BY created_at DESC"
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            return [self._row_to_campaign(r) for r in rows]
+
+    def update_campaign_status(self, slug: str, status: CampaignStatus) -> bool:
+        """Update campaign operational status."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        status_val = status.value if hasattr(status, "value") else str(status)
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE campaigns SET status = ?, updated_at = ? WHERE slug = ?",
+                (status_val, now_str, slug),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_campaign_progress(self, slug: str) -> Optional[CampaignProgress]:
+        """Calculate real-time progress, percentage raised, and donor counts for a campaign."""
+        campaign = self.get_campaign(slug)
+        if not campaign:
+            return None
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(amount), 0) as current_raised,
+                    COUNT(*) as donations_count,
+                    COUNT(DISTINCT donor_email) as unique_donors
+                FROM donations
+                WHERE campaign_slug = ? AND status = 'COMPLETED'
+                """,
+                (slug,),
+            )
+            row = cur.fetchone()
+            current_raised = Decimal(str(row["current_raised"] if row else 0))
+            donations_cnt = row["donations_count"] if row else 0
+            unique_donors_cnt = row["unique_donors"] if row else 0
+
+            percent = 0.0
+            if campaign.goal_amount > Decimal("0.00"):
+                percent = float(round((current_raised / campaign.goal_amount) * 100, 1))
+
+            return CampaignProgress(
+                id=campaign.id or 0,
+                slug=campaign.slug,
+                title=campaign.title,
+                description=campaign.description,
+                goal_amount=campaign.goal_amount,
+                currency=campaign.currency,
+                status=campaign.status,
+                current_amount=Decimal(f"{current_raised:.2f}"),
+                percent_raised=percent,
+                donations_count=donations_cnt,
+                unique_donors=unique_donors_cnt,
+                is_goal_met=current_raised >= campaign.goal_amount,
+                start_date=campaign.start_date,
+                end_date=campaign.end_date,
+                created_at=campaign.created_at,
+            )
+
+    def list_campaign_progress(self, status: Optional[CampaignStatus] = None) -> List[CampaignProgress]:
+        """Return progress metrics for all campaigns."""
+        campaigns = self.list_campaigns(status=status)
+        progress_list: List[CampaignProgress] = []
+        for c in campaigns:
+            prog = self.get_campaign_progress(c.slug)
+            if prog:
+                progress_list.append(prog)
+        return progress_list
+
+    def _row_to_campaign(self, row: sqlite3.Row) -> CampaignRecord:
+        """Convert SQLite row to CampaignRecord model."""
+        return CampaignRecord(
+            id=row["id"],
+            slug=row["slug"],
+            title=row["title"],
+            description=row["description"],
+            goal_amount=Decimal(str(row["goal_amount"])),
+            currency=CurrencyCode(row["currency"]),
+            status=CampaignStatus(row["status"]),
+            start_date=row["start_date"],
+            end_date=row["end_date"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
     def _row_to_record(self, row: sqlite3.Row) -> DonationRecord:
         """Transform an SQLite Row into a validated DonationRecord model."""
+        keys = row.keys()
+        camp_slug = row["campaign_slug"] if "campaign_slug" in keys else None
         return DonationRecord(
             id=row["id"],
             order_id=row["order_id"],
@@ -514,6 +735,7 @@ class DonorRepository:
             status=DonationStatus(row["status"]),
             dedication=row["dedication"],
             is_anonymous=bool(row["is_anonymous"]),
+            campaign_slug=camp_slug,
             receipt_sent=bool(row["receipt_sent"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )

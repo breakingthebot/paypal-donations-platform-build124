@@ -14,6 +14,10 @@ from pydantic import BaseModel
 from paypal_donations import __version__
 from paypal_donations.email_service import EmailService
 from paypal_donations.models import (
+    CampaignCreate,
+    CampaignProgress,
+    CampaignRecord,
+    CampaignStatus,
     CaptureOrderRequest,
     CreateOrderRequest,
     CreateSubscriptionRequest,
@@ -143,6 +147,7 @@ def create_donation_order(req: CreateOrderRequest) -> OrderCreationResult:
             status=DonationStatus.PENDING,
             dedication=req.dedication,
             is_anonymous=req.is_anonymous,
+            campaign_slug=req.campaign_slug,
             receipt_sent=False,
         )
         repo.create_donation(pending_record)
@@ -168,6 +173,7 @@ def capture_donation_order(req: CaptureOrderRequest) -> Dict[str, Any]:
         currency = CurrencyCode(curr_str)
         dedication = req.dedication if req.dedication is not None else (existing.dedication if existing else None)
         is_anonymous = req.is_anonymous if req.is_anonymous is not None else (existing.is_anonymous if existing else False)
+        campaign_slug = req.campaign_slug or (existing.campaign_slug if existing else None)
 
         if existing:
             # Update SQLite entry to COMPLETED
@@ -175,10 +181,10 @@ def capture_donation_order(req: CaptureOrderRequest) -> Dict[str, Any]:
                 conn.execute(
                     """
                     UPDATE donations
-                    SET status = ?, capture_id = ?, amount = ?, currency = ?
+                    SET status = ?, capture_id = ?, amount = ?, currency = ?, campaign_slug = ?
                     WHERE order_id = ?
                     """,
-                    (DonationStatus.COMPLETED.value, capture_id, str(amount), currency.value, req.order_id)
+                    (DonationStatus.COMPLETED.value, capture_id, str(amount), currency.value, campaign_slug, req.order_id)
                 )
                 conn.commit()
             record = repo.get_by_order_id(req.order_id)
@@ -193,6 +199,7 @@ def capture_donation_order(req: CaptureOrderRequest) -> Dict[str, Any]:
                 status=DonationStatus.COMPLETED,
                 dedication=dedication,
                 is_anonymous=is_anonymous,
+                campaign_slug=campaign_slug,
                 receipt_sent=False,
             )
             record = repo.create_donation(new_record)
@@ -225,6 +232,7 @@ def capture_donation_order(req: CaptureOrderRequest) -> Dict[str, Any]:
             "receipt_id": receipt_id,
             "amount": f"{amount:.2f}",
             "currency": currency.value,
+            "campaign_slug": campaign_slug,
             "receipt_sent": sent,
             "donor_name": "Anonymous" if is_anonymous else donor_name,
             "message": "Thank you! Your donation has been captured and a confirmation receipt was sent.",
@@ -236,15 +244,67 @@ def capture_donation_order(req: CaptureOrderRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/donations/donors", response_model=List[PublicDonorEntry])
-def get_donor_wall(limit: int = Query(20, ge=1, le=100)) -> List[PublicDonorEntry]:
-    """Retrieve public donor wall entries with privacy protection."""
-    return repo.get_public_wall(limit=limit)
+def get_donor_wall(
+    limit: int = Query(20, ge=1, le=100),
+    campaign_slug: Optional[str] = Query(None),
+) -> List[PublicDonorEntry]:
+    """Retrieve public donor wall entries with privacy protection and optional campaign filter."""
+    return repo.get_public_wall(limit=limit, campaign_slug=campaign_slug)
 
 
 @app.get("/api/donations/stats", response_model=DonationStats)
 def get_donation_statistics() -> DonationStats:
     """Retrieve aggregated donation financial metrics and totals."""
     return repo.get_statistics()
+
+
+# =========================================================================
+# Fundraising Campaigns & Goal Progress Endpoints
+# =========================================================================
+
+@app.post("/api/campaigns", response_model=CampaignRecord)
+def create_campaign_endpoint(campaign: CampaignCreate) -> CampaignRecord:
+    """Create a new targeted fundraising campaign."""
+    try:
+        return repo.create_campaign(campaign)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create campaign: {e}")
+
+
+@app.get("/api/campaigns", response_model=List[CampaignProgress])
+def list_campaigns_endpoint(status: Optional[CampaignStatus] = Query(None)) -> List[CampaignProgress]:
+    """List all fundraising campaigns with real-time goal progress and metrics."""
+    return repo.list_campaign_progress(status=status)
+
+
+@app.get("/api/campaigns/{slug}", response_model=CampaignProgress)
+def get_campaign_endpoint(slug: str) -> CampaignProgress:
+    """Retrieve single campaign details, goal progress, and metrics."""
+    prog = repo.get_campaign_progress(slug)
+    if not prog:
+        raise HTTPException(status_code=404, detail=f"Campaign '{slug}' not found.")
+    return prog
+
+
+@app.get("/api/campaigns/{slug}/donors", response_model=List[PublicDonorEntry])
+def get_campaign_donors(slug: str, limit: int = Query(20, ge=1, le=100)) -> List[PublicDonorEntry]:
+    """Retrieve public donor wall specific to a targeted campaign."""
+    camp = repo.get_campaign(slug)
+    if not camp:
+        raise HTTPException(status_code=404, detail=f"Campaign '{slug}' not found.")
+    return repo.get_public_wall(limit=limit, campaign_slug=slug)
+
+
+@app.post("/api/campaigns/{slug}/status")
+def update_campaign_status_endpoint(slug: str, status: CampaignStatus = Query(...)) -> Dict[str, Any]:
+    """Update campaign lifecycle status (e.g. ACTIVE, PAUSED, COMPLETED)."""
+    camp = repo.get_campaign(slug)
+    if not camp:
+        raise HTTPException(status_code=404, detail=f"Campaign '{slug}' not found.")
+    repo.update_campaign_status(slug, status)
+    return {"slug": slug, "status": status.value, "message": f"Campaign status updated to {status.value}."}
 
 
 @app.post("/api/donations/create-subscription", response_model=SubscriptionResult)
@@ -479,6 +539,30 @@ def serve_donation_portal() -> str:
           </p>
         </div>
 
+        <!-- Active Campaign Drive & Goal Progress Bar -->
+        <div id="campaign-container" class="bg-gradient-to-br from-white to-sky-50/60 rounded-2xl border border-sky-100 p-6 shadow-sm relative overflow-hidden">
+          <div class="flex items-center justify-between mb-2">
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-sky-100 text-sky-800">
+              <span class="w-1.5 h-1.5 rounded-full bg-sky-600"></span>
+              Featured Campaign Drive
+            </span>
+            <span id="camp-percent-badge" class="text-xs font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">0.0% Funded</span>
+          </div>
+          <h3 id="camp-title" class="text-xl font-black text-slate-900 mt-1">Clean Water Initiative 2026</h3>
+          <p id="camp-desc" class="text-xs text-slate-600 mt-1 line-clamp-2">Providing solar-powered clean water filtration wells for rural communities.</p>
+
+          <!-- Progress Bar Meter -->
+          <div class="mt-4">
+            <div class="w-full bg-slate-200 rounded-full h-3.5 p-0.5 overflow-hidden">
+              <div id="camp-progress-bar" class="bg-gradient-to-r from-sky-500 to-emerald-500 h-full rounded-full transition-all duration-700 ease-out" style="width: 0%"></div>
+            </div>
+            <div class="flex items-center justify-between text-xs font-bold text-slate-700 mt-2">
+              <span>Raised: <span id="camp-raised-val" class="text-slate-900 font-extrabold">$0.00</span></span>
+              <span>Target: <span id="camp-goal-val" class="text-slate-500 font-medium">$10,000.00</span></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Live Impact Metrics -->
         <div class="grid grid-cols-3 gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div>
@@ -567,6 +651,13 @@ def serve_donation_portal() -> str:
               <label for="donor-email" class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Email Address (For Tax Receipt)</label>
               <input type="email" id="donor-email" placeholder="alex.morgan@example.com" required
                 class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:bg-white focus:border-sky-500 focus:ring-2 focus:ring-sky-200 outline-none transition-all">
+            </div>
+
+            <div>
+              <label for="campaign-select" class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Designate to Campaign</label>
+              <select id="campaign-select" class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:bg-white focus:border-sky-500 focus:ring-2 focus:ring-sky-200 outline-none transition-all text-slate-800">
+                <option value="">General Fund (Unrestricted)</option>
+              </select>
             </div>
 
             <div>
@@ -696,12 +787,13 @@ def serve_donation_portal() -> str:
       }}
     }});
 
-    // Load donor wall and statistics
+    // Load donor wall, statistics, and campaign progress
     async function loadData() {{
       try {{
-        const [statsRes, wallRes] = await Promise.all([
+        const [statsRes, wallRes, campRes] = await Promise.all([
           fetch("/api/donations/stats"),
-          fetch("/api/donations/donors?limit=10")
+          fetch("/api/donations/donors?limit=10"),
+          fetch("/api/campaigns")
         ]);
 
         if (statsRes.ok) {{
@@ -710,6 +802,26 @@ def serve_donation_portal() -> str:
           document.getElementById("stat-total-amount").textContent = `$${{parseFloat(totalUsd).toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}}`;
           document.getElementById("stat-donations-count").textContent = stats.total_donations;
           document.getElementById("stat-unique-donors").textContent = stats.unique_donors;
+        }}
+
+        if (campRes.ok) {{
+          const camps = await campRes.json();
+          if (camps.length > 0) {{
+            const featured = camps[0];
+            document.getElementById("camp-title").textContent = featured.title;
+            document.getElementById("camp-desc").textContent = featured.description || "";
+            const pct = Math.min(100, Math.max(0, featured.percent_raised));
+            document.getElementById("camp-progress-bar").style.width = `${{pct}}%`;
+            document.getElementById("camp-percent-badge").textContent = `${{featured.percent_raised.toFixed(1)}}% Funded`;
+            document.getElementById("camp-raised-val").textContent = `$${{parseFloat(featured.current_amount).toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}}`;
+            document.getElementById("camp-goal-val").textContent = `$${{parseFloat(featured.goal_amount).toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}}`;
+
+            const campSelect = document.getElementById("campaign-select");
+            const currentVal = campSelect.value;
+            campSelect.innerHTML = '<option value="">General Fund (Unrestricted)</option>' +
+              camps.map(c => `<option value="${{c.slug}}">${{c.title}}</option>`).join('');
+            if (currentVal) campSelect.value = currentVal;
+          }}
         }}
 
         if (wallRes.ok) {{
@@ -747,6 +859,7 @@ def serve_donation_portal() -> str:
       const email = document.getElementById("donor-email").value.trim();
       const dedication = document.getElementById("donor-dedication").value.trim();
       const isAnonymous = document.getElementById("is-anonymous").checked;
+      const selectedCampaign = document.getElementById("campaign-select").value || null;
 
       if (!name) {{
         feedback.className = "rounded-xl p-3 bg-rose-50 text-rose-700 border border-rose-200 block";
@@ -783,7 +896,7 @@ def serve_donation_portal() -> str:
               frequency: "MONTHLY",
               donor_name: name,
               donor_email: email,
-              dedication: dedication || null,
+              dedication: dedication || (selectedCampaign ? `Campaign: ${{selectedCampaign}}` : null),
               is_anonymous: isAnonymous
             }})
           }});
@@ -817,7 +930,8 @@ def serve_donation_portal() -> str:
             donor_name: name,
             donor_email: email,
             dedication: dedication || null,
-            is_anonymous: isAnonymous
+            is_anonymous: isAnonymous,
+            campaign_slug: selectedCampaign
           }})
         }});
 
@@ -838,7 +952,8 @@ def serve_donation_portal() -> str:
             donor_name: name,
             donor_email: email,
             dedication: dedication || null,
-            is_anonymous: isAnonymous
+            is_anonymous: isAnonymous,
+            campaign_slug: selectedCampaign
           }})
         }});
 

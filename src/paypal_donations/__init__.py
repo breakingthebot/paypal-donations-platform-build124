@@ -5,4 +5,4 @@ checkout buttons, automated donor confirmation emails, persistent SQLite
 donor logs, REST APIs, and an interactive CLI.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"

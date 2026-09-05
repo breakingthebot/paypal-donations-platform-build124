@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-04
+
+### Added
+- **Fundraising Campaign Drives & Goal Progress Tracking**:
+  - Full campaign lifecycle support with statuses (`active`, `paused`, `completed`, `archived`).
+  - Progress calculation engine computing amount raised, percentage of target goal funded, donor counts, and remaining amounts.
+  - Pydantic models: `CampaignStatus`, `CampaignCreate`, `CampaignRecord`, and `CampaignProgress`.
+- **Database Schema Expansion (`campaigns` table & migration)**:
+  - New `campaigns` table with indexing on `slug` and `status`.
+  - Auto-migration adding `campaign_slug` column and `idx_donations_campaign` index to existing `donations` table.
+  - Default campaign seed (`clean-water-2026`).
+  - Repository methods: `create_campaign`, `get_campaign`, `list_campaigns`, `update_campaign_status`, `get_campaign_progress`, and `list_campaign_progress`.
+  - Added campaign slug filtering to `get_public_wall` and updated `export_csv` to output campaign attribution.
+- **REST Endpoints for Fundraising Drives**:
+  - `GET /api/campaigns`: Lists active campaigns with dynamic funding progress metrics.
+  - `POST /api/campaigns`: Creates new targeted campaign drives with financial goals and metadata.
+  - `GET /api/campaigns/{slug}`: Retrieves detailed campaign statistics, goal progress, and donor counts.
+  - `GET /api/campaigns/{slug}/donors`: Returns public donor wall entries specific to a campaign.
+  - `POST /api/campaigns/{slug}/status`: Updates campaign status.
+  - Enhanced `POST /api/donations/create-order` and `POST /api/donations/capture-order` to record and link contributions directly to campaign slugs.
+- **Interactive Campaign UI in Donation Portal**:
+  - Featured Campaign Drive card displaying campaign title, description, dynamic percentage funded badge, animated visual progress meter bar, and raised vs. goal metrics.
+  - "Designate to Campaign" dropdown in the donation checkout form allowing supporters to allocate contributions to specific fundraising initiatives.
+- **Campaign Management CLI Suite**:
+  - `paypal-donations campaigns list`: Formatted table showing campaign slugs, titles, goal progress bars, and amounts raised.
+  - `paypal-donations campaigns create`: Creates a new campaign drive directly from the terminal.
+  - `paypal-donations campaigns show`: Displays detailed metrics and progress panels for any campaign.
+- **Campaign Test Suite**:
+  - 7 new unit and integration tests covering repository operations, duplicate slug validation, status transitions, progress calculations, donor wall campaign filtering, REST API lifecycle, and CLI commands (52 total passing tests).
+
 ## [1.2.0] - 2026-09-04
 
 ### Added
